@@ -20,9 +20,11 @@ dev = [
     "pytest>=7.0",
     "pytest-cov",
 ]
+gui = ["pyinstaller>=6.0"]
 
 [project.scripts]
 pyhammi = "pyhammi.cli:main"
+pyhammi-gui = "pyhammi.gui:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

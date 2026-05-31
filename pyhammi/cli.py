@@ -42,6 +42,8 @@ def build_parser() -> argparse.ArgumentParser:
     tdp.add_argument("--output", type=str, default=None,
                      help="Output image file (default: show interactively)")
 
+    gui = sub.add_parser("gui", help="Launch the pyHaMMy GUI")
+
     return parser
 
 
@@ -97,6 +99,11 @@ def cmd_tdp(args):
     )
 
 
+def cmd_gui(args):
+    from pyhammi.gui import run_gui
+    run_gui()
+
+
 def main():
     parser = build_parser()
     args = parser.parse_args()
@@ -109,6 +116,8 @@ def main():
         cmd_run(args)
     elif args.command == "tdp":
         cmd_tdp(args)
+    elif args.command == "gui":
+        cmd_gui(args)
 
 
 if __name__ == "__main__":

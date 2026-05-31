@@ -78,6 +78,35 @@ pyhammi tdp --input-dir ./results/ --exposure 0.1 --output tdp.png
 | `--mode` | auto | 数据模式：`auto` / `fret` / `donor_acceptor` / `single_channel` |
 | `--signal-column` | 1 | 单通道模式下的信号列索引 |
 
+## GUI 界面
+
+pyHaMMy 提供了一个基于 `tkinter` 的图形用户界面，适合交互式分析和结果预览。
+
+### 启动方式
+
+```bash
+pyhammi gui
+```
+
+### 界面说明
+
+- **文件选择**：通过文件浏览对话框选择单个或多个 `.csv` / `.dat` 轨迹文件，或指定输入目录进行批量处理
+- **参数面板**：在左侧/顶部面板中设置状态数、初始猜测值、最大迭代次数、收敛容差等 HMM 参数
+- **进度条**：底部进度条实时显示当前分析任务的完成进度，支持多文件批量处理进度跟踪
+- **结果表格**：分析完成后，右侧表格展示每个文件的状态数、FRET 峰值、转移概率矩阵等拟合结果，支持选中行查看详细输出
+
+> **提示**：截图示例请参考项目仓库中的 `docs/screenshots/` 目录（如有）。
+
+### 打包为可执行文件
+
+如需分发给无 Python 环境的用户，可使用 PyInstaller 构建独立 `.exe` 文件：
+
+```bash
+python build_exe.py
+```
+
+生成的 `.exe` 文件位于 `dist/` 目录中，无需安装 Python 即可运行。
+
 ## 输入格式
 
 支持自动检测的 ASCII 文本文件：
@@ -117,7 +146,7 @@ pyHaMMy/
 │   ├── batch.py            # 多进程批处理器
 │   ├── postprocess.py      # 理想化轨迹 + 驻留时间提取
 │   ├── tdp.py              # TDP 可视化 + 高斯拟合
-│   └── gui.py              # GUI 界面 (待开发)
+│   └── gui.py              # GUI 界面
 ├── tests/
 │   └── test_io.py          # I/O 单元测试
 ├── pyproject.toml          # 项目配置
