@@ -90,12 +90,18 @@ pyhammi gui
 
 ### 界面说明
 
-- **文件选择**：通过文件浏览对话框选择单个或多个 `.csv` / `.dat` 轨迹文件，或指定输入目录进行批量处理
-- **参数面板**：在左侧/顶部面板中设置状态数、初始猜测值、最大迭代次数、收敛容差等 HMM 参数
-- **进度条**：底部进度条实时显示当前分析任务的完成进度，支持多文件批量处理进度跟踪
-- **结果表格**：分析完成后，右侧表格展示每个文件的状态数、FRET 峰值、转移概率矩阵等拟合结果，支持选中行查看详细输出
-
-> **提示**：截图示例请参考项目仓库中的 `docs/screenshots/` 目录（如有）。
+- **菜单栏**：
+  - **文件 (File)**：添加文件、添加文件夹、清除所有、退出
+  - **设置 (Settings)**：HMM 参数设置对话框、语言切换（English / 中文）
+  - **帮助 (Help)**：关于对话框
+- **参数设置对话框**：通过菜单 Settings → HMM Parameters 打开独立参数设置窗口
+- **文件选择**：通过按钮或菜单选择 `.csv` / `.dat` 轨迹文件，或指定输入目录进行批量处理
+- **参数面板**：在主界面中直接设置状态数、初始猜测值、最大迭代次数等 HMM 参数
+- **进度条**：实时显示当前分析任务的完成进度
+- **结果表格**：分析完成后展示每个文件的拟合结果，带颜色状态标识（绿色=成功，橙色=有警告，红色=错误）
+- **日志面板**：彩色日志输出（蓝色=标题、橙色=警告、红色=错误、绿色=完成）
+- **状态栏**：底部显示当前状态和版本号
+- **多语言支持**：支持英文（默认）和中文界面切换，所有 UI 元素实时刷新
 
 ### 打包为可执行文件
 
@@ -146,10 +152,12 @@ pyHaMMy/
 │   ├── batch.py            # 多进程批处理器
 │   ├── postprocess.py      # 理想化轨迹 + 驻留时间提取
 │   ├── tdp.py              # TDP 可视化 + 高斯拟合
-│   └── gui.py              # GUI 界面
+│   ├── i18n.py             # 国际化 (英文/中文翻译)
+│   └── gui.py              # GUI 界面 (tkinter, 菜单栏, 多语言)
 ├── tests/
 │   └── test_io.py          # I/O 单元测试
 ├── pyproject.toml          # 项目配置
+├── build_exe.py            # PyInstaller 打包脚本
 ├── README.md
 └── .gitignore
 ```
@@ -169,3 +177,42 @@ pyHaMMy/
 ## 许可证
 
 MIT License
+
+## 更新日志
+
+### v0.2.0 (2026-06-01)
+
+**GUI 重大更新**
+
+- **菜单栏**：新增 File / Settings / Help 菜单，支持通过菜单栏操作文件、打开参数设置对话框、切换语言、查看关于信息
+- **参数设置对话框**：Settings → HMM Parameters 打开独立参数设置窗口，可统一配置所有分析参数
+- **多语言支持 (i18n)**：新增 `i18n.py` 模块，支持英文（默认）和中文界面切换，所有 UI 元素（菜单、按钮、标签、表格表头、状态栏、对话框、日志消息）实时刷新
+- **现代化 UI 样式**：
+  - 平台自适应字体（Windows: Segoe UI / Consolas, macOS: Helvetica Neue / Menlo, Linux: Helvetica / DejaVu Sans Mono）
+  - 自定义 ttk 样式主题（clam 基础 + 蓝色强调色 `#1565C0`）
+  - 结果表格行高 28px，带颜色状态标签（绿色/橙色/红色）
+  - 日志面板彩色输出（蓝色标题、橙色警告、红色错误、绿色完成）
+  - 状态栏显示当前状态和版本号
+- **启动速度优化**：
+  - GUI 模块不再在顶层导入 `hmmlearn` / `sklearn` / `numpy` 等重型库
+  - HMM 分析在后台线程中按需导入依赖
+  - 配置对象通过 `pickle` 序列化传递给工作线程，避免主线程加载 `numpy`
+  - 后台预热线程预加载 `numpy`，不阻塞 UI
+  - PyInstaller 打包排除 `matplotlib` / `unittest` / `pydoc` 等不需要的模块
+
+**警告处理优化**
+
+- `model.py`：使用 `warnings.catch_warnings(record=True)` 捕获 HMM 拟合过程中的所有警告（收敛失败、数值问题等），过滤 `DeprecationWarning` / `FutureWarning`，存入 `HMMResult.warnings` 字段
+- `config.py`：`HMMResult` 新增 `warnings: list[str]` 字段
+- `gui.py`：警告以橙色显示在日志面板中，结果表格中有警告的条目标记为 "OK (warnings)"（橙色）
+- `batch.py` / `cli.py`：分析完成后打印每个文件的警告信息
+
+### v0.1.0 (2026-05-30)
+
+- 初始版本：完整的 HMM 分析流程（Baum-Welch 训练 + Viterbi 解码）
+- CLI 工具（`run` / `tdp` / `gui` 子命令）
+- tkinter GUI（文件选择、参数面板、进度条、结果表格、日志面板）
+- 多进程批处理支持
+- TDP 可视化
+- 输出格式与原版 HaMMy 完全兼容（`*report.dat` / `*path.dat` / `*dwell.dat`）
+- PyInstaller 打包为独立 `.exe` 文件

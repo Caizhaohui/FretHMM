@@ -53,19 +53,27 @@ def fit_hmm(
 
     model.startprob_ = np.ones(config.n_states) / config.n_states
 
-    model.fit(obs_2d)
+    captured_warnings: list[str] = []
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
 
-    # Check convergence
-    if hasattr(model, "monitor_") and not model.monitor_.converged:
-        warnings.warn(
-            f"Baum-Welch did not converge after {config.max_iter} iterations "
-            f"(n_states={config.n_states}). Results may be unreliable. "
-            f"Consider increasing --max-iter.",
-            stacklevel=2,
-        )
+        model.fit(obs_2d)
 
-    log_prob = model.score(obs_2d)
-    viterbi_path = model.predict(obs_2d)
+        if hasattr(model, "monitor_") and not model.monitor_.converged:
+            warnings.warn(
+                f"Baum-Welch did not converge after {config.max_iter} iterations "
+                f"(n_states={config.n_states}). Results may be unreliable. "
+                f"Consider increasing --max-iter.",
+                stacklevel=2,
+            )
+
+        log_prob = model.score(obs_2d)
+        viterbi_path = model.predict(obs_2d)
+
+        for w in caught:
+            if w.category in (DeprecationWarning, FutureWarning):
+                continue
+            captured_warnings.append(str(w.message))
 
     means = model.means_.flatten()
     sigma = float(np.sqrt(model.covars_.flatten()[0]))
@@ -93,6 +101,7 @@ def fit_hmm(
         fraction_spent=fraction_spent,
         transitions_found=transitions_found,
         filepath=trace.filepath,
+        warnings=captured_warnings,
     )
 
 

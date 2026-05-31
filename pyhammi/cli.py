@@ -86,6 +86,8 @@ def cmd_run(args):
             fp = r.filepath.name if r.filepath else "?"
             print(f"  {fp}: {r.n_states} states, log_prob={r.log_prob:.2f}, "
                   f"means={r.means}")
+            for w in r.warnings:
+                print(f"    WARNING: {w}")
 
 
 def cmd_tdp(args):

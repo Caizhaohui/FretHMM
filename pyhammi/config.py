@@ -1,6 +1,6 @@
 """Constants, defaults, and validation utilities for pyHaMMy."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Literal, Optional
 
@@ -75,6 +75,7 @@ class HMMResult:
     transitions_found: np.ndarray
 
     filepath: Optional[Path] = None
+    warnings: list[str] = field(default_factory=list)
 
     @property
     def dwell_times(self) -> np.ndarray:

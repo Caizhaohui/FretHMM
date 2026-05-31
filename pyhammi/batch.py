@@ -40,6 +40,10 @@ def _run_files(
     results: list[HMMResult] = []
     total = len(files)
 
+    def _print_result(r: HMMResult) -> None:
+        for w in r.warnings:
+            print(f"    WARNING: {w}")
+
     try:
         if workers <= 1:
             for i, fp in enumerate(files, 1):
@@ -47,6 +51,7 @@ def _run_files(
                 try:
                     r = process_file(fp, config, output_dir)
                     results.append(r)
+                    _print_result(r)
                     print(f"  -> {r.n_states} states, log_prob={r.log_prob:.2f}, "
                           f"means={r.means}")
                 except Exception as e:
@@ -66,6 +71,7 @@ def _run_files(
                     try:
                         r = future.result()
                         results_ordered[idx] = r
+                        _print_result(r)
                         print(f"  -> {r.n_states} states, log_prob={r.log_prob:.2f}")
                     except Exception as e:
                         print(f"  -> ERROR: {e}")
