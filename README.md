@@ -11,27 +11,16 @@
 | 批量处理 | 多文件并行（`ProcessPoolExecutor`），支持目录扫描 |
 | CLI | `run`、`tdp`、`gui` 三个子命令 |
 | GUI | tkinter 界面，中英文切换，后台线程分析 |
-| 输出格式 | `*_classified.csv`、`*_summary.json` 及 HaMMy 兼容格式 |
+| 输出格式 | `*_classified.csv`、`*_summary.json`、`*report.dat`、`*path.dat`、`*dwell.dat` |
 | TDP | 转换密度图（Transition Density Plot）可视化 |
 | 打包 | PyInstaller 一键构建 Windows 可执行文件 |
-
-## 与原版 HaMMy 的对比
-
-| 特性 | 原版 HaMMy | FretHMM |
-|------|-----------|---------|
-| 平台 | 仅 Windows | 跨平台（Windows / Linux / macOS） |
-| 源码 | 闭源（Numerical Recipes in C） | 完全开源 |
-| 界面 | GUI（WinForms） | CLI + GUI（tkinter） |
-| 并行 | 单线程 | 多进程并行批处理 |
-| 状态数上限 | 10 | 无限制 |
-| 数据格式 | Donor/Acceptor 对 | 自动检测，支持单通道和多通道 |
 
 ## 安装
 
 ```bash
 git clone https://github.com/Caizhaohui/FretHMM.git
 cd FretHMM
-pip install -e ".[dev]"
+pip install -e .
 ```
 
 **运行依赖：**
@@ -44,12 +33,18 @@ pip install -e ".[dev]"
 
 **可选依赖：**
 
-- `pip install -e ".[dev]"` — 安装 pytest 测试框架
-- `pip install -e ".[gui]"` — 安装 PyInstaller 打包工具
+```bash
+pip install -e ".[dev]"    # 安装 pytest 测试框架
+pip install -e ".[gui]"    # 安装 PyInstaller 打包工具
+```
 
 ## 使用方法
 
 ### CLI
+
+FretHMM 提供三个子命令：`run`（HMM 分析）、`tdp`（转换密度图）、`gui`（图形界面）。
+
+#### run — HMM 状态分类
 
 ```bash
 # 单文件分析（2 态，自动检测数据格式）
@@ -58,52 +53,85 @@ frethmm run --files trace.csv --states 2 --output-dir ./results/
 # 批量处理目录下所有轨迹文件（4 个并行进程）
 frethmm run --input-dir ./traces/ --states 5 --workers 4 --output-dir ./results/
 
+# 同时指定多个文件
+frethmm run --files trace1.csv trace2.csv trace3.csv --states 3 --output-dir ./results/
+
 # 提供初始猜测值（适用于状态间距较小的情况）
 frethmm run --files data.csv --states 2 --guesses "0.3,0.7"
 
 # 指定单通道模式及信号列
 frethmm run --files data.csv --states 2 --mode single_channel --signal-column 1
 
-# 详细输出模式
+# 详细输出模式（显示所有警告信息）
 frethmm run --files data.csv --states 3 -v
-
-# 生成转换密度图
-frethmm tdp --input-dir ./results/ --exposure 0.1 --output tdp.png
-
-# 启动 GUI
-frethmm gui
 ```
 
-### CLI 参数说明
+**`run` 子命令参数：**
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
+| `--files` | — | 指定一个或多个轨迹文件路径（与 `--input-dir` 二选一，必填） |
+| `--input-dir` | — | 指定输入目录，自动扫描其中所有轨迹文件（与 `--files` 二选一，必填） |
+| `--output-dir` | — | 输出目录（默认与输入文件同目录） |
 | `--states` | 2 | HMM 状态数 |
-| `--guesses` | 无 | 逗号分隔的初始信号猜测值 |
+| `--guesses` | 无 | 逗号分隔的初始信号猜测值，数量须与 `--states` 一致 |
 | `--max-iter` | 500 | Baum-Welch 最大迭代次数 |
 | `--tol` | 1e-4 | 收敛容差 |
-| `--workers` | 1 | 并行工作进程数 |
-| `--mode` | auto | 数据模式：`auto` / `paired_channel` / `single_channel` |
-| `--signal-column` | 1 | 单通道模式下的信号列索引（1-based） |
-| `--input-dir` | — | 输入目录（与 `--files` 二选一） |
-| `--files` | — | 指定文件列表（与 `--input-dir` 二选一） |
-| `--output-dir` | — | 输出目录（默认与输入文件同目录） |
+| `--workers` | 1 | 并行工作进程数（>1 时启用多进程批处理） |
+| `--mode` | auto | 数据模式：`auto`（自动检测）/ `paired_channel`（双通道）/ `single_channel`（单通道） |
+| `--signal-column` | 1 | 单通道模式下选择的信号列索引（1-based，第 1 列为 Time 之后的列） |
+| `-v` / `--verbose` | 关闭 | 详细输出模式，显示所有警告 |
 
-### GUI
+**批量处理说明：**
+
+- `--input-dir` 会扫描目录下所有 `.csv`、`.dat`、`.txt`、`.tsv` 文件，自动跳过 `*report.dat`、`*path.dat`、`*dwell.dat`、`*_classified.csv`、`*_summary.json` 等输出文件
+- `--workers N` 启用多进程并行，N 为进程数，建议不超过 CPU 核心数
+- 批量过程中单个文件出错不会中断整体流程，错误信息会打印到终端
+
+#### tdp — 转换密度图
+
+```bash
+# 从输出目录中的 report 文件生成转换密度图（交互窗口）
+frethmm tdp --input-dir ./results/ --exposure 0.1
+
+# 保存为图片文件
+frethmm tdp --input-dir ./results/ --exposure 0.1 --output tdp.png
+
+# 只显示前 N 个状态
+frethmm tdp --input-dir ./results/ --states 3 --output tdp.png
+```
+
+**`tdp` 子命令参数：**
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--input-dir` | — | 包含 `*report.dat` 文件的目录（必填） |
+| `--exposure` | 0.1 | 每帧曝光时间（秒），用于速率计算 |
+| `--states` | 无 | 仅显示前 N 个状态（按转移频次排序） |
+| `--output` | 无 | 输出图片路径（如 `tdp.png`），不指定则弹出交互窗口 |
+
+#### gui — 图形界面
 
 ```bash
 frethmm gui
 ```
 
-GUI 功能：
+### GUI 使用说明
 
-- **菜单栏**：文件管理、HMM 参数设置、中英文切换、关于信息
-- **文件选择**：添加文件 / 文件夹，支持 `.csv`、`.dat`、`.txt`、`.tsv`
-- **参数面板**：状态数、初始猜测值、迭代次数、容差、并行数、数据模式
-- **进度条**：实时显示分析进度
-- **结果表格**：每个文件的拟合结果，颜色标识状态（绿色=成功，橙色=警告，红色=错误）
-- **日志面板**：彩色日志输出
-- **状态栏**：显示当前状态和版本号
+```bash
+frethmm gui
+```
+
+- **菜单栏**：
+  - **文件 (File)**：添加文件、添加文件夹、清除所有、退出
+  - **设置 (Settings)**：HMM 参数设置对话框、语言切换（English / 中文）
+  - **帮助 (Help)**：关于对话框
+- **文件选择**：通过按钮或菜单选择 `.csv` / `.dat` 轨迹文件，或指定输入目录批量处理
+- **参数面板**：状态数、初始猜测值、最大迭代次数、容差、并行数、数据模式、信号列
+- **进度条**：实时显示分析任务完成进度
+- **结果表格**：分析完成后展示每个文件的拟合结果，颜色标识（绿色=成功，橙色=警告，红色=错误）
+- **日志面板**：彩色日志输出（蓝色标题、橙色警告、红色错误、绿色完成）
+- **状态栏**：底部显示当前状态和版本号
 
 ### 打包为可执行文件
 
@@ -126,7 +154,7 @@ Time,channel1
 2,2570
 ```
 
-或包含多列信号时通过 `--signal-column` 选择：
+多列信号时通过 `--signal-column` 选择指定列：
 
 ```csv
 Time,channel1,channel2
@@ -134,7 +162,9 @@ Time,channel1,channel2
 1,2884,1289
 ```
 
-**双通道 Donor/Acceptor 模式**（空格/Tab 分隔，3 列）：
+`--signal-column 1` 使用 `channel1` 列，`--signal-column 2` 使用 `channel2` 列。
+
+**双通道 Donor/Acceptor 模式**（空格/Tab 分隔，3 列，无表头）：
 
 ```
 <time>  <donor>  <acceptor>
@@ -150,9 +180,9 @@ Time,channel1,channel2
 |------|------|------|
 | `*_classified.csv` | CSV | 主输出：`time, classified_mean` 两列理想化轨迹 |
 | `*_summary.json` | JSON | 状态均值、占比、转移矩阵、驻留统计、警告信息 |
-| `*report.dat` | 文本 | HaMMy 兼容：模型参数（状态数、均值、sigma、转移概率） |
-| `*path.dat` | 文本 | HaMMy 兼容：原始信号 + 分类信号路径 |
-| `*dwell.dat` | 文本 | HaMMy 兼容：驻留时间表 |
+| `*report.dat` | 文本 | 模型参数（状态数、均值、sigma、转移概率矩阵） |
+| `*path.dat` | 文本 | 原始信号 + 分类信号路径 |
+| `*dwell.dat` | 文本 | 驻留时间表：`<start_mean> <stop_mean> <frames_lasted>` |
 
 ## 项目结构
 
@@ -162,27 +192,27 @@ FretHMM/
 │   ├── __init__.py              # 版本信息
 │   ├── app/
 │   │   ├── cli.py               # CLI 入口（run / tdp / gui）
-│   │   ├── gui.py               # tkinter GUI（1123 行）
+│   │   ├── gui.py               # tkinter GUI
 │   │   └── i18n.py              # 国际化（英文/中文）
 │   ├── core/
 │   │   ├── io.py                # 文件读写（轨迹读取 + 报告输出）
-│   │   ├── model.py             # HMM 引擎（hmmlearn 封装 + Baum-Welch + Viterbi）
+│   │   ├── model.py             # HMM 引擎（Baum-Welch + Viterbi）
 │   │   ├── batch.py             # 多进程批处理器
 │   │   └── postprocess.py       # 分类轨迹构建 + 驻留时间提取 + 转移统计
 │   ├── domain/
-│   │   └── models.py            # 数据模型（ClassificationConfig / SignalTrace / ClassificationResult）
+│   │   └── models.py            # 数据模型（Config / Trace / Result）
 │   ├── formats/
-│   │   └── report_parser.py     # FretHMM 输出报告解析器
+│   │   └── report_parser.py     # report.dat 解析器
 │   ├── legacy/
-│   │   └── report_parser.py     # HaMMy 原版 report.dat 解析器
+│   │   └── report_parser.py     # 旧版报告格式解析器
 │   └── viz/
 │       └── tdp.py               # 转换密度图可视化 + 高斯速率拟合
 ├── tests/
 │   ├── fixtures/                # 回归测试基准数据
 │   ├── test_io.py               # I/O 与报告解析测试
-│   └── test_golden.py           # HaMMy 样例 golden tests + CLI 回归测试
+│   └── test_golden.py           # CLI 回归测试
 ├── docs/
-│   └── FretHMM-refactor-plan.md # 重构路线与任务清单
+│   └── FretHMM-refactor-plan.md # 开发路线
 ├── pyproject.toml               # 项目配置（v0.3.0）
 ├── build_exe.py                 # PyInstaller 打包脚本
 ├── frethmm.spec                 # PyInstaller 规格文件
@@ -196,26 +226,20 @@ pip install -e ".[dev]"
 pytest tests/ -v
 ```
 
-测试覆盖范围：
-
-- **I/O 测试**（`test_io.py`）：FRET 比值计算、轨迹读取、报告写入/解析往返、文件发现与过滤
-- **Golden 测试**（`test_golden.py`）：HaMMy 2 态 / 10 态样例报告解析、Viterbi 路径重映射、CLI 端到端回归（Values1.csv / Values2.csv 输出哈希校验）
-
 ## 开发路线
 
 详见 [docs/FretHMM-refactor-plan.md](./docs/FretHMM-refactor-plan.md)。
 
 ### 当前已完成（v0.3.0）
 
-- [x] 项目从 pyHaMMy 重命名为 FretHMM
-- [x] 模块化架构拆分（core / domain / app / formats / legacy / viz）
+- [x] 模块化架构（core / domain / app / formats / legacy / viz）
 - [x] CLI 批量处理（`--files` / `--input-dir` / `--workers`）
 - [x] GUI 完整功能（菜单栏、参数设置、中英文切换、后台分析）
 - [x] 主输出 `*_classified.csv` + `*_summary.json`
-- [x] HaMMy 兼容输出 `report / path / dwell`
+- [x] `report / path / dwell` 格式输出
 - [x] TDP 转换密度图可视化
 - [x] PyInstaller Windows GUI 打包
-- [x] Golden tests 回归测试覆盖
+- [x] 回归测试覆盖
 
 ### 计划中
 
@@ -225,10 +249,6 @@ pytest tests/ -v
 - [ ] GUI 内嵌轨迹预览与分类信号叠加显示
 - [ ] 批量分析实验级汇总表
 - [ ] 异常值检测与 NaN/Inf 预处理
-
-## 致谢
-
-本项目是对 [HaMMy](https://github.com/Ha-SingleMoleculeLab/HaMMy) 的 Python 重写。原版 HaMMy 由 Sean McKinney（UIUC）开发，基于隐马尔可夫模型对单分子 FRET 时间轨迹进行概率分析。
 
 ## 许可证
 
