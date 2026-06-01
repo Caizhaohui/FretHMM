@@ -5,9 +5,12 @@ from __future__ import annotations
 import multiprocessing
 import os
 import platform
+import pydoc
 import queue
 import shutil
+import sys
 import threading
+import unittest
 from dataclasses import dataclass
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
@@ -16,11 +19,10 @@ from typing import Any, Optional
 import tkinter as tk
 import customtkinter as ctk
 
-_VERSION = "0.3.0"
 try:
     from frethmm import __version__ as _VERSION
 except Exception:
-    pass
+    _VERSION = "0.4.0"
 
 _LOG = "log"
 _PROGRESS = "progress"
@@ -28,6 +30,23 @@ _RESULT = "result"
 _DONE = "done"
 _ERROR = "error"
 _WARNING = "warning"
+
+
+def _debug_log_path() -> Path:
+    if getattr(sys, "frozen", False):
+        base_dir = Path.home() / "AppData" / "Local" / "FretHMM"
+    else:
+        base_dir = Path(__file__).resolve().parents[2] / "logs"
+    base_dir.mkdir(parents=True, exist_ok=True)
+    return base_dir / "frethmm-gui.log"
+
+
+def _append_debug_log(message: str) -> None:
+    try:
+        with _debug_log_path().open("a", encoding="utf-8") as fh:
+            fh.write(message.rstrip() + "\n")
+    except Exception:
+        pass
 
 
 @dataclass
@@ -56,7 +75,15 @@ def _worker(
     result_queue: queue.Queue[_Msg],
 ) -> None:
     import pickle
-    from frethmm.core.model import process_trace_file
+    import traceback
+
+    try:
+        from frethmm.core.model import process_trace_file
+    except Exception as exc:
+        _append_debug_log(f"Import error in worker: {exc}\n{traceback.format_exc()}")
+        result_queue.put(_Msg(_ERROR, f"Import error: {exc}\n{traceback.format_exc()}"))
+        result_queue.put(_Msg(_DONE, None))
+        return
 
     total = len(tasks)
     for i, task in enumerate(tasks):
@@ -65,7 +92,8 @@ def _worker(
             break
 
         fp = Path(task["filepath"])
-        config = pickle.loads(task["config_bytes"])
+        config_bytes = task["config_bytes"]
+        export_options_bytes = task["export_options_bytes"]
         output_dir = (
             Path(task["output_dir"])
             if task.get("output_dir") is not None
@@ -75,7 +103,9 @@ def _worker(
         result_queue.put(_Msg(_PROGRESS, {"current": i + 1, "total": total}))
 
         try:
-            r = process_trace_file(fp, config, output_dir)
+            config = pickle.loads(config_bytes)
+            export_options = pickle.loads(export_options_bytes)
+            r = process_trace_file(fp, config, output_dir, export_options=export_options)
 
             for w in r.warnings:
                 result_queue.put(_Msg(_WARNING, w))
@@ -104,7 +134,9 @@ def _worker(
                 )
             )
         except Exception as exc:
-            result_queue.put(_Msg(_ERROR, str(exc)))
+            tb = traceback.format_exc()
+            _append_debug_log(f"Worker error for {fp}: {exc}\n{tb}")
+            result_queue.put(_Msg(_ERROR, f"{exc}\n{tb}"))
             result_queue.put(
                 _Msg(
                     _RESULT,
@@ -160,6 +192,11 @@ class _App:
         self._results_map: dict[str, Any] = {}
         self._selected_result_path: Optional[str] = None
         self._last_output_path: Optional[str] = None
+        self._export_classified_var = tk.BooleanVar(value=True)
+        self._export_summary_var = tk.BooleanVar(value=False)
+        self._export_report_var = tk.BooleanVar(value=False)
+        self._export_path_var = tk.BooleanVar(value=False)
+        self._export_dwell_var = tk.BooleanVar(value=False)
 
     def _t(self, key: str, **kwargs) -> str:
         from frethmm.app.i18n import t, get_language
@@ -483,6 +520,59 @@ class _App:
         
         lbl = ctk.CTkLabel(self._out_frame, text=self._t('section_output'), font=ctk.CTkFont(weight="bold"))
         lbl.pack(anchor=tk.W, padx=10, pady=5)
+
+        options_row = ctk.CTkFrame(self._out_frame, fg_color="transparent")
+        options_row.pack(fill=tk.X, padx=10, pady=(0, 4))
+        self._output_options_label = ctk.CTkLabel(
+            options_row,
+            text=self._t("label_output_files"),
+            width=100,
+            anchor=tk.W,
+        )
+        self._output_options_label.pack(side=tk.LEFT, padx=(0, 8))
+        self._chk_export_classified = ctk.CTkCheckBox(
+            options_row,
+            text=self._t("output_option_classified"),
+            variable=self._export_classified_var,
+        )
+        self._chk_export_classified.pack(side=tk.LEFT, padx=(0, 10))
+        self._chk_export_classified.select()
+        self._chk_export_classified.configure(state="disabled")
+        self._chk_export_summary = ctk.CTkCheckBox(
+            options_row,
+            text=self._t("output_option_summary"),
+            variable=self._export_summary_var,
+        )
+        self._chk_export_summary.pack(side=tk.LEFT, padx=(0, 10))
+        self._chk_export_report = ctk.CTkCheckBox(
+            options_row,
+            text=self._t("output_option_report"),
+            variable=self._export_report_var,
+        )
+        self._chk_export_report.pack(side=tk.LEFT, padx=(0, 10))
+
+        options_row2 = ctk.CTkFrame(self._out_frame, fg_color="transparent")
+        options_row2.pack(fill=tk.X, padx=10, pady=(0, 5))
+        self._output_options_hint = ctk.CTkLabel(
+            options_row2,
+            text=self._t("output_options_hint"),
+            text_color="#757575",
+            width=100,
+            anchor=tk.W,
+        )
+        self._output_options_hint.pack(side=tk.LEFT, padx=(0, 8))
+        self._chk_export_path = ctk.CTkCheckBox(
+            options_row2,
+            text=self._t("output_option_path"),
+            variable=self._export_path_var,
+        )
+        self._chk_export_path.pack(side=tk.LEFT, padx=(0, 10))
+        self._chk_export_dwell = ctk.CTkCheckBox(
+            options_row2,
+            text=self._t("output_option_dwell"),
+            variable=self._export_dwell_var,
+        )
+        self._chk_export_dwell.pack(side=tk.LEFT, padx=(0, 10))
         
         out_row = ctk.CTkFrame(self._out_frame, fg_color="transparent")
         out_row.pack(fill=tk.X, padx=10, pady=5)
@@ -857,6 +947,13 @@ class _App:
         self._lbl_mode.configure(text=self._t("label_data_mode"))
         self._lbl_signal_column.configure(text=self._t("label_signal_column"))
 
+        self._output_options_label.configure(text=self._t("label_output_files"))
+        self._chk_export_classified.configure(text=self._t("output_option_classified"))
+        self._chk_export_summary.configure(text=self._t("output_option_summary"))
+        self._chk_export_report.configure(text=self._t("output_option_report"))
+        self._output_options_hint.configure(text=self._t("output_options_hint"))
+        self._chk_export_path.configure(text=self._t("output_option_path"))
+        self._chk_export_dwell.configure(text=self._t("output_option_dwell"))
         self._btn_output.configure(text=self._t("btn_output_folder"))
         self._btn_output_reset.configure(text=self._t("btn_output_reset"))
         self._btn_export_classified.configure(text=self._t("btn_export_classified"))
@@ -1033,6 +1130,7 @@ class _App:
         )
 
     def _log(self, msg: str, tag: str = "normal") -> None:
+        _append_debug_log(f"[{tag}] {msg}")
         self._log_text.config(state=tk.NORMAL)
         self._log_text.insert(tk.END, msg + "\n", tag)
         self._log_text.see(tk.END)
@@ -1210,7 +1308,7 @@ class _App:
         )
         self._refresh_input_status()
 
-    def _on_mode_changed(self, _event: Optional[Any] = None) -> None:
+    def _on_mode_changed(self, choice: str = "") -> None:
         self._update_mode_controls()
 
     def _classified_output_path(
@@ -1258,6 +1356,17 @@ class _App:
         mode = self._mode_var.get()
         state = "normal" if mode in {"auto", "single_channel"} else "disabled"
         self._signal_entry.configure(state=state)
+
+    def _build_export_options(self):
+        from frethmm.domain.models import ExportOptions
+
+        return ExportOptions(
+            classified_csv=True,
+            summary_json=self._export_summary_var.get(),
+            state_report=self._export_report_var.get(),
+            state_path=self._export_path_var.get(),
+            dwell_report=self._export_dwell_var.get(),
+        )
 
     def _parse_guesses(self, guesses_text: str, n_states: int) -> Optional[list[float]]:
         guesses = None
@@ -1318,6 +1427,8 @@ class _App:
         import pickle
 
         tasks: list[dict[str, Any]] = []
+        export_options = self._build_export_options()
+        export_options_bytes = pickle.dumps(export_options)
         if self.selected_files:
             config = self._build_config()
             config_bytes = pickle.dumps(config)
@@ -1326,6 +1437,7 @@ class _App:
                     {
                         "filepath": str(Path(path)),
                         "config_bytes": config_bytes,
+                        "export_options_bytes": export_options_bytes,
                         "output_dir": self.output_dir,
                     }
                 )
@@ -1352,6 +1464,7 @@ class _App:
                         {
                             "filepath": str(path),
                             "config_bytes": config_bytes,
+                            "export_options_bytes": export_options_bytes,
                             "output_dir": job_output_dir,
                         }
                     )
@@ -1379,8 +1492,12 @@ class _App:
 
         try:
             tasks = self._build_tasks()
-        except ValueError as e:
-            messagebox.showerror(self._t("msg_invalid_params"), str(e))
+        except Exception as e:
+            import traceback
+            messagebox.showerror(
+                self._t("msg_invalid_params"),
+                f"{e}\n\n{traceback.format_exc()}",
+            )
             return
         if not tasks:
             messagebox.showwarning(
@@ -1425,7 +1542,7 @@ class _App:
             daemon=True,
         )
         self._worker_thread.start()
-        self._poll_queue()
+        self._after_id = self.root.after(80, self._poll_queue)
 
     def _cancel(self) -> None:
         self._cancel_event.set()
@@ -1436,11 +1553,17 @@ class _App:
         try:
             while True:
                 msg = self._result_queue.get_nowait()
-                self._handle_msg(msg)
+                try:
+                    self._handle_msg(msg)
+                except Exception as exc:
+                    import traceback
+                    self._log(f"UI error: {exc}", "error")
+                    self._log(traceback.format_exc(), "error")
         except queue.Empty:
             pass
 
-        self._after_id = self.root.after(80, self._poll_queue)
+        if self._worker_thread is not None:
+            self._after_id = self.root.after(80, self._poll_queue)
 
     def _handle_msg(self, msg: _Msg) -> None:
         if msg.type == _LOG:
@@ -1582,10 +1705,27 @@ class _App:
 
 
 def run_gui() -> None:
-    # Use CustomTkinter theme settings
+    import traceback
+
+    def _excepthook(exc_type, exc_value, exc_tb):
+        _append_debug_log(
+            "Unhandled GUI exception:\n"
+            + "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+        )
+        traceback.print_exception(exc_type, exc_value, exc_tb)
+        try:
+            messagebox.showerror(
+                "FretHMM Error",
+                f"{exc_type.__name__}: {exc_value}",
+            )
+        except Exception:
+            pass
+
+    sys.excepthook = _excepthook
+
     ctk.set_appearance_mode("Light")
     ctk.set_default_color_theme("blue")
-    
+
     root = ctk.CTk()
     root.title("FretHMM — Single-Molecule State Classification")
     root.minsize(950, 650)
@@ -1605,10 +1745,11 @@ def run_gui() -> None:
     def _lazy_init():
         import importlib
 
-        try:
-            importlib.import_module("numpy")
-        except Exception:
-            pass
+        for mod in ("numpy", "scipy", "hmmlearn", "sklearn"):
+            try:
+                importlib.import_module(mod)
+            except Exception:
+                pass
 
     threading.Thread(target=_lazy_init, daemon=True).start()
 

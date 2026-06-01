@@ -11,7 +11,7 @@
 | 批量处理 | 多文件并行（`ProcessPoolExecutor`），支持目录扫描 |
 | CLI | `run`、`tdp`、`gui` 三个子命令 |
 | GUI | CustomTkinter 界面，深色/浅色主题，中英文切换，后台线程分析 |
-| 输出格式 | `*_classified.csv`、`*_summary.json`、`*report.dat`、`*path.dat`、`*dwell.dat` |
+| 输出格式 | `*_classified.csv`、`*_summary.json`、`*report.dat`、`*path.dat`、`*dwell.dat`（GUI 可勾选） |
 | TDP | 转换密度图（Transition Density Plot）可视化 |
 | 打包 | PyInstaller 一键构建 Windows 可执行文件 |
 
@@ -134,6 +134,7 @@ frethmm gui
 - **文件选择**：通过按钮或菜单选择 `.csv` / `.dat` 轨迹文件，或指定输入目录批量处理
 - **状态文件夹批处理**：新增"按状态分组的文件夹批处理"面板，可同时添加多个文件夹并为每个文件夹指定不同的状态数
 - **参数面板**：状态数、初始猜测值、最大迭代次数、容差、并行数、数据模式、信号列
+- **输出选项**：GUI 新增输出文件勾选框，可自由选择输出 classified.csv / summary.json / report.dat / path.dat / dwell.dat
 - **运行面板**：实时显示分析状态、进度、运行汇总（成功/警告/错误计数）和最近输出路径
 - **结果详情**：选中结果表格中的文件后，右侧面板展示完整拟合指标和警告信息
 - **进度条**：实时显示分析任务完成进度
@@ -208,7 +209,7 @@ FretHMM/
 │   │   ├── batch.py             # 多进程批处理器
 │   │   └── postprocess.py       # 分类轨迹构建 + 驻留时间提取 + 转移统计
 │   ├── domain/
-│   │   └── models.py            # 数据模型（Config / Trace / Result）
+│   │   └── models.py            # 数据模型（Config / Trace / Result / ExportOptions）
 │   ├── formats/
 │   │   └── report_parser.py     # report.dat 解析器
 │   ├── legacy/
@@ -221,7 +222,7 @@ FretHMM/
 │   └── test_golden.py           # CLI 回归测试
 ├── docs/
 │   └── FretHMM-refactor-plan.md # 开发路线
-├── pyproject.toml               # 项目配置（v0.4.0）
+├── pyproject.toml               # 项目配置（v0.5.0）
 ├── build_exe.py                 # PyInstaller 打包脚本
 ├── frethmm.spec                 # PyInstaller 规格文件
 └── README.md
@@ -235,6 +236,19 @@ pytest tests/ -v
 ```
 
 ## 更新日志
+
+### v0.5.0 (2026-06-01)
+
+GUI 稳定性修复与导出选项增强：
+
+- **`ExportOptions` 数据类**：新增 `ExportOptions` 域模型，支持精细控制每种输出文件的生成（classified_csv / summary_json / state_report / state_path / dwell_report）
+- **GUI 输出文件勾选框**：在输出面板新增复选框，用户可自由选择需要输出的文件类型（classified.csv 始终输出）
+- **Worker 错误处理增强**：后台线程异常现在输出完整 traceback 到日志面板和调试日志文件（`%LOCALAPPDATA%/FretHMM/frethmm-gui.log`）
+- **全局异常钩子**：`sys.excepthook` 捕获主线程未处理异常，在 `console=False` 的 EXE 中也能弹出错误对话框
+- **`_poll_queue` 修复**：消息处理异常不再导致轮询终止；移除 `is_alive()` 检查避免队列消息丢失
+- **`_on_mode_changed` 修复**：CTkComboBox 的 `command` 回调签名从 `Event` 改为 `str`
+- **PyInstaller 打包优化**：使用 `collect_all` + `copy_metadata` 完整收集 hmmlearn / sklearn / scipy / numpy / matplotlib 资源
+- **测试**：新增 `TestProcessTraceFileExports` 单元测试
 
 ### v0.4.0 (2026-06-01)
 

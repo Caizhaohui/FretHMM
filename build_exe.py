@@ -21,6 +21,7 @@ def main():
         "PyInstaller",
         "frethmm.spec",
         "--noconfirm",
+        "--clean",
     ]
 
     try:

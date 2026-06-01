@@ -13,6 +13,8 @@ from frethmm.core.io import (
     write_state_report,
     write_summary_json,
 )
+from frethmm.core import model as model_module
+from frethmm.domain.models import ExportOptions
 from frethmm.domain.models import ClassificationResult, SignalTrace
 from frethmm.formats.report_parser import read_report_file
 
@@ -171,6 +173,48 @@ class TestReadTrace:
         np.testing.assert_array_equal(trace.signal, [2884, 2884, 2570])
         trace_alt = read_signal_trace(trace_file, mode="single_channel", signal_column=2)
         np.testing.assert_array_equal(trace_alt.signal, [-5096, 1289, 1289])
+
+
+class TestProcessTraceFileExports:
+    def test_process_trace_file_respects_export_options(self, tmp_path, monkeypatch):
+        trace = SignalTrace(
+            time=np.array([0.0, 1.0]),
+            signal=np.array([1.0, 2.0]),
+            observations=np.array([1.0, 2.0]),
+            filepath=tmp_path / "signal.csv",
+            mode="single_channel",
+        )
+        result = ClassificationResult(
+            n_states=2,
+            log_prob=-1.0,
+            state_means=np.array([1.0, 2.0]),
+            state_sigma=0.1,
+            signal_sigma=0.2,
+            transition_matrix=np.array([[0.9, 0.1], [0.2, 0.8]]),
+            state_path=np.array([0, 1]),
+            classified_signal=np.array([1.0, 2.0]),
+            fraction_spent=np.zeros((2, 2)),
+            transitions_found=np.zeros((2, 2), dtype=int),
+            filepath=trace.filepath,
+        )
+        calls: list[str] = []
+
+        monkeypatch.setattr(model_module, "read_signal_trace", lambda *args, **kwargs: trace)
+        monkeypatch.setattr(model_module, "fit_signal_hmm", lambda *args, **kwargs: result)
+        monkeypatch.setattr(model_module, "write_classified_csv", lambda *args, **kwargs: calls.append("classified"))
+        monkeypatch.setattr(model_module, "write_summary_json", lambda *args, **kwargs: calls.append("summary"))
+        monkeypatch.setattr(model_module, "write_state_report", lambda *args, **kwargs: calls.append("report"))
+        monkeypatch.setattr(model_module, "write_state_path", lambda *args, **kwargs: calls.append("path"))
+        monkeypatch.setattr(model_module, "write_dwell_report", lambda *args, **kwargs: calls.append("dwell"))
+
+        model_module.process_trace_file(
+            trace.filepath,
+            model_module.ClassificationConfig(),
+            tmp_path,
+            export_options=ExportOptions.classified_only(),
+        )
+
+        assert calls == ["classified"]
 
 
 class TestFindTraceFiles:

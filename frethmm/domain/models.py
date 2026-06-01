@@ -13,6 +13,25 @@ DEFAULT_N_STATES = 2
 
 
 @dataclass
+class ExportOptions:
+    classified_csv: bool = True
+    summary_json: bool = True
+    state_report: bool = True
+    state_path: bool = True
+    dwell_report: bool = True
+
+    @classmethod
+    def classified_only(cls) -> "ExportOptions":
+        return cls(
+            classified_csv=True,
+            summary_json=False,
+            state_report=False,
+            state_path=False,
+            dwell_report=False,
+        )
+
+
+@dataclass
 class ClassificationConfig:
     n_states: int = DEFAULT_N_STATES
     max_iter: int = DEFAULT_MAX_ITER

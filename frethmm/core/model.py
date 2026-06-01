@@ -17,7 +17,23 @@ from frethmm.core.io import (
     write_summary_json,
 )
 from frethmm.core.postprocess import build_classified_signal, compute_transition_stats
-from frethmm.domain.models import ClassificationConfig, ClassificationResult, SignalTrace
+from frethmm.domain.models import (
+    ClassificationConfig,
+    ClassificationResult,
+    ExportOptions,
+    SignalTrace,
+)
+
+
+def _resolve_export_options(
+    export_options: Optional[ExportOptions],
+    classified_only: Optional[bool],
+) -> ExportOptions:
+    if export_options is not None:
+        return export_options
+    if classified_only:
+        return ExportOptions.classified_only()
+    return ExportOptions()
 
 
 def sort_state_outputs(
@@ -124,14 +140,20 @@ def process_trace_file(
     filepath: Path,
     config: ClassificationConfig,
     output_dir: Optional[Path] = None,
-    classified_only: bool = False,
+    classified_only: Optional[bool] = None,
+    export_options: Optional[ExportOptions] = None,
 ) -> ClassificationResult:
     trace = read_signal_trace(filepath, mode=config.data_mode, signal_column=config.signal_column)
     result = fit_signal_hmm(trace, config)
-    write_classified_csv(trace, result, output_dir)
-    if not classified_only:
+    exports = _resolve_export_options(export_options, classified_only)
+    if exports.classified_csv:
+        write_classified_csv(trace, result, output_dir)
+    if exports.summary_json:
         write_summary_json(result, output_dir)
+    if exports.state_report:
         write_state_report(result, output_dir)
+    if exports.state_path:
         write_state_path(trace, result, output_dir)
+    if exports.dwell_report:
         write_dwell_report(result, output_dir)
     return result
