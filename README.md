@@ -226,29 +226,41 @@ pip install -e ".[dev]"
 pytest tests/ -v
 ```
 
-## 开发路线
+## 更新日志
 
-详见 [docs/FretHMM-refactor-plan.md](./docs/FretHMM-refactor-plan.md)。
+### v0.3.0 (2026-06-01)
 
-### 当前已完成（v0.3.0）
+项目重构为 FretHMM，建立模块化架构：
 
-- [x] 模块化架构（core / domain / app / formats / legacy / viz）
-- [x] CLI 批量处理（`--files` / `--input-dir` / `--workers`）
-- [x] GUI 完整功能（菜单栏、参数设置、中英文切换、后台分析）
-- [x] 主输出 `*_classified.csv` + `*_summary.json`
-- [x] `report / path / dwell` 格式输出
-- [x] TDP 转换密度图可视化
-- [x] PyInstaller Windows GUI 打包
-- [x] 回归测试覆盖
+- 模块化拆分为 `core` / `domain` / `app` / `formats` / `legacy` / `viz` 六个子包
+- CLI 支持单文件（`--files`）和目录批量（`--input-dir`）两种处理模式，支持多进程并行（`--workers`）
+- GUI 完整功能：菜单栏、参数设置对话框、中英文切换、后台线程分析、彩色日志
+- 默认生成 `*_classified.csv`（`time, classified_mean`）和 `*_summary.json` 主输出
+- 同时输出 `report / path / dwell` 格式文件
+- TDP 转换密度图可视化 + 高斯速率拟合
+- PyInstaller 一键构建 Windows GUI 可执行文件
+- 回归测试覆盖（I/O、报告解析、CLI 端到端）
 
-### 计划中
+### v0.2.0 (2026-06-01)
 
-- [ ] 多起点拟合（multi-start）降低局部最优敏感性
-- [ ] AIC/BIC 模型选择自动确定状态数
-- [ ] 最小驻留时间合并与近邻状态合并
-- [ ] GUI 内嵌轨迹预览与分类信号叠加显示
-- [ ] 批量分析实验级汇总表
-- [ ] 异常值检测与 NaN/Inf 预处理
+GUI 重大更新：
+
+- 新增菜单栏（File / Settings / Help）和独立参数设置对话框
+- 新增多语言支持（i18n），英文和中文界面实时切换
+- 现代化 UI 样式：平台自适应字体、自定义 ttk 主题、彩色日志、状态栏
+- 启动速度优化：GUI 延迟导入重型库，后台预热
+- 警告处理优化：捕获 HMM 拟合警告，GUI 中以橙色标识
+
+### v0.1.0 (2026-05-30)
+
+初始版本：
+
+- 完整 HMM 分析流程（Baum-Welch 训练 + Viterbi 解码）
+- CLI 工具（`run` / `tdp` / `gui` 子命令）
+- tkinter GUI（文件选择、参数面板、进度条、结果表格、日志面板）
+- 多进程批处理支持
+- TDP 可视化
+- PyInstaller GUI 打包脚本
 
 ## 许可证
 
