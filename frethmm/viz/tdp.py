@@ -14,18 +14,21 @@ except ImportError:
 
 
 def load_reports(input_dir: Path) -> list[dict]:
-    from pyhammi.io import read_report
+    from frethmm.core.io import read_state_report as read_report
 
     if not input_dir.is_dir():
         raise NotADirectoryError(f"Not a directory: {input_dir}")
 
     reports = []
     for fp in sorted(input_dir.iterdir()):
-        if fp.is_file() and "report" in fp.name.lower():
-            try:
-                reports.append(read_report(fp))
-            except Exception:
-                continue
+        if not fp.is_file():
+            continue
+        if fp.suffix.lower() not in {".dat", ".txt"}:
+            continue
+        try:
+            reports.append(read_report(fp))
+        except Exception:
+            continue
     return reports
 
 
@@ -131,8 +134,8 @@ def generate_tdp(
     ax.plot([vmin - margin, vmax + margin], [vmin - margin, vmax + margin],
             "k--", alpha=0.3, linewidth=0.5)
 
-    ax.set_xlabel("Start FRET (before transition)")
-    ax.set_ylabel("Stop FRET (after transition)")
+    ax.set_xlabel("Start state mean")
+    ax.set_ylabel("Stop state mean")
     ax.set_title("Transition Density Plot")
     ax.set_aspect("equal")
 
@@ -162,11 +165,11 @@ def fit_gaussian_to_rates(
         if start_state >= n or stop_state >= n:
             continue
 
-        start_fret = sorted_means[start_state]
-        stop_fret = sorted_means[stop_state]
+        start_mean = sorted_means[start_state]
+        stop_mean = sorted_means[stop_state]
 
-        i = int(np.argmin(np.abs(means - start_fret)))
-        j = int(np.argmin(np.abs(means - stop_fret)))
+        i = int(np.argmin(np.abs(means - start_mean)))
+        j = int(np.argmin(np.abs(means - stop_mean)))
 
         tp = rep["transmat"][i, j]
         if tp > 0:

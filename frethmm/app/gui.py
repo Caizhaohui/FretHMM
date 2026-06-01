@@ -1,4 +1,4 @@
-"""tkinter GUI for pyHaMMy — lazy imports for fast startup, i18n, menu bar."""
+"""tkinter GUI for FretHMM — lazy imports for fast startup, i18n, menu bar."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import multiprocessing
 import os
 import platform
 import queue
+import shutil
 import threading
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -13,9 +14,9 @@ from typing import Any, Optional
 
 import tkinter as tk
 
-_VERSION = "0.1.0"
+_VERSION = "0.3.0"
 try:
-    from pyhammi import __version__ as _VERSION
+    from frethmm import __version__ as _VERSION
 except Exception:
     pass
 
@@ -43,7 +44,7 @@ def _worker(
     result_queue: queue.Queue[_Msg],
 ) -> None:
     import pickle
-    from pyhammi.model import process_file
+    from frethmm.core.model import process_trace_file
 
     config = pickle.loads(config_bytes)
     total = len(files)
@@ -56,19 +57,32 @@ def _worker(
         result_queue.put(_Msg(_PROGRESS, {"current": i + 1, "total": total}))
 
         try:
-            r = process_file(fp, config, output_dir)
+            r = process_trace_file(fp, config, output_dir)
 
             for w in r.warnings:
                 result_queue.put(_Msg(_WARNING, w))
 
-            result_queue.put(_Msg(_RESULT, {"filepath": str(fp), "result": r}))
+            result_queue.put(
+                _Msg(
+                    _RESULT,
+                    {
+                        "filepath": str(fp),
+                        "result": r,
+                        "output_dir": str(output_dir) if output_dir else None,
+                    },
+                )
+            )
             result_queue.put(
                 _Msg(
                     _LOG,
-                    "log_result",
-                    lp=f"{r.log_prob:.2f}",
-                    m=[round(m, 4) for m in r.means.tolist()],
-                    sig=f"{r.sigma:.4f}",
+                    {
+                        "key": "log_result",
+                        "kwargs": {
+                            "lp": f"{r.log_prob:.2f}",
+                            "m": [round(m, 4) for m in r.state_means.tolist()],
+                            "sig": f"{r.state_sigma:.4f}",
+                        },
+                    },
                 )
             )
         except Exception as exc:
@@ -187,9 +201,13 @@ class _App:
         self._result_queue: queue.Queue[_Msg] = queue.Queue()
         self._after_id: Optional[str] = None
         self._lang = "en"
+        self._status_key = "status_ready"
+        self._status_kwargs: dict[str, Any] = {}
+        self._result_stats = {"ok": 0, "warnings": 0, "errors": 0}
+        self._classified_outputs: dict[str, Path] = {}
 
     def _t(self, key: str, **kwargs) -> str:
-        from pyhammi.i18n import t, set_language, get_language
+        from frethmm.app.i18n import t, get_language
 
         lang = get_language()
         if lang != self._lang:
@@ -206,7 +224,7 @@ class _App:
         title_frame.pack(fill=tk.X, pady=(0, 10))
         self._title_label = ttk.Label(
             title_frame,
-            text="pyHaMMy",
+            text="FretHMM",
             font=self.fonts["title"],
             foreground="#1565C0",
         )
@@ -226,6 +244,7 @@ class _App:
         self._build_results_section(main)
         self._build_log_section(main)
         self._build_status_bar(main)
+        self._update_mode_controls()
 
     def _build_menu(self) -> None:
         menubar = tk.Menu(self.root)
@@ -299,6 +318,12 @@ class _App:
             btn_row, text=self._t("btn_clear"), command=self._clear_files
         )
         self._btn_clear.pack(side=tk.LEFT)
+        self._btn_remove = ttk.Button(
+            btn_row,
+            text=self._t("btn_remove_selected"),
+            command=self._delete_selected_files,
+        )
+        self._btn_remove.pack(side=tk.LEFT, padx=(6, 0))
 
         list_frame = ttk.Frame(self._file_frame)
         list_frame.pack(fill=tk.X, pady=(6, 0))
@@ -371,13 +396,28 @@ class _App:
         self._lbl_mode = ttk.Label(row3, text=self._t("label_data_mode"))
         self._lbl_mode.pack(side=tk.LEFT)
         self._mode_var = tk.StringVar(value="auto")
-        ttk.Combobox(
+        self._mode_combo = ttk.Combobox(
             row3,
             textvariable=self._mode_var,
             width=18,
-            values=["auto", "fret", "donor_acceptor", "single_channel"],
+            values=["auto", "paired_channel", "single_channel"],
             state="readonly",
-        ).pack(side=tk.LEFT, padx=(4, 0))
+        )
+        self._mode_combo.pack(side=tk.LEFT, padx=(4, 16))
+        self._mode_combo.bind("<<ComboboxSelected>>", self._on_mode_changed)
+        self._lbl_signal_column = ttk.Label(
+            row3, text=self._t("label_signal_column")
+        )
+        self._lbl_signal_column.pack(side=tk.LEFT)
+        self._signal_column_var = tk.IntVar(value=1)
+        self._signal_spinbox = ttk.Spinbox(
+            row3,
+            from_=1,
+            to=32,
+            textvariable=self._signal_column_var,
+            width=4,
+        )
+        self._signal_spinbox.pack(side=tk.LEFT, padx=(4, 0))
 
     def _build_output_section(self, parent: ttk.Frame) -> None:
         self._out_frame = ttk.LabelFrame(
@@ -390,6 +430,18 @@ class _App:
             out_row, text=self._t("btn_output_folder"), command=self._select_output
         )
         self._btn_output.pack(side=tk.LEFT, padx=(0, 8))
+        self._btn_output_reset = ttk.Button(
+            out_row,
+            text=self._t("btn_output_reset"),
+            command=self._reset_output,
+        )
+        self._btn_output_reset.pack(side=tk.LEFT, padx=(0, 8))
+        self._btn_export_classified = ttk.Button(
+            out_row,
+            text=self._t("btn_export_classified"),
+            command=self._export_selected_classified,
+        )
+        self._btn_export_classified.pack(side=tk.LEFT, padx=(0, 8))
         self._output_label = ttk.Label(
             out_row,
             text=self._t("output_same_as_input"),
@@ -513,7 +565,7 @@ class _App:
         ).pack(side=tk.RIGHT)
 
     def _switch_language(self, lang: str) -> None:
-        from pyhammi.i18n import set_language
+        from frethmm.app.i18n import set_language
 
         set_language(lang)
         self._lang = lang
@@ -529,6 +581,7 @@ class _App:
         self._btn_add.config(text=self._t("btn_add_files"))
         self._btn_folder.config(text=self._t("btn_add_folder"))
         self._btn_clear.config(text=self._t("btn_clear"))
+        self._btn_remove.config(text=self._t("btn_remove_selected"))
 
         self._param_frame.config(text=f" {self._t('section_params')} ")
         self._lbl_states.config(text=self._t("label_states"))
@@ -537,9 +590,12 @@ class _App:
         self._lbl_tol.config(text=self._t("label_tolerance"))
         self._lbl_workers.config(text=self._t("label_workers"))
         self._lbl_mode.config(text=self._t("label_data_mode"))
+        self._lbl_signal_column.config(text=self._t("label_signal_column"))
 
         self._out_frame.config(text=f" {self._t('section_output')} ")
         self._btn_output.config(text=self._t("btn_output_folder"))
+        self._btn_output_reset.config(text=self._t("btn_output_reset"))
+        self._btn_export_classified.config(text=self._t("btn_export_classified"))
         if not self.output_dir:
             self._output_label.config(text=self._t("output_same_as_input"))
 
@@ -556,7 +612,7 @@ class _App:
 
         self._log_frame.config(text=f" {self._t('section_log')} ")
 
-        self._status_label.config(text=self._t("status_ready"))
+        self._status_label.config(text=self._t(self._status_key, **self._status_kwargs))
 
         self._file_menu.entryconfig(0, label=self._t("menu_file_add"))
         self._file_menu.entryconfig(1, label=self._t("menu_file_add_folder"))
@@ -581,16 +637,16 @@ class _App:
     def _show_params_dialog(self) -> None:
         dlg = tk.Toplevel(self.root)
         dlg.title(self._t("dlg_params_title"))
-        dlg.geometry("420x320")
+        dlg.geometry("460x360")
         dlg.resizable(False, False)
         dlg.transient(self.root)
         dlg.grab_set()
 
         sw = dlg.winfo_screenwidth()
         sh = dlg.winfo_screenheight()
-        x = (sw - 420) // 2
-        y = (sh - 320) // 2
-        dlg.geometry(f"420x320+{x}+{y}")
+        x = (sw - 460) // 2
+        y = (sh - 360) // 2
+        dlg.geometry(f"460x360+{x}+{y}")
 
         frame = ttk.Frame(dlg, padding=20)
         frame.pack(fill=tk.BOTH, expand=True)
@@ -635,16 +691,24 @@ class _App:
             frame,
             textvariable=mode_var,
             width=16,
-            values=["auto", "fret", "donor_acceptor", "single_channel"],
+            values=["auto", "paired_channel", "single_channel"],
             state="readonly",
         ).grid(row=4, column=1, padx=(10, 0), pady=6)
 
-        ttk.Label(frame, text=self._t("label_guesses")).grid(
+        ttk.Label(frame, text=self._t("label_signal_column")).grid(
             row=5, column=0, sticky=tk.W, pady=6
+        )
+        signal_column_var = tk.IntVar(value=self._signal_column_var.get())
+        ttk.Spinbox(
+            frame, from_=1, to=32, textvariable=signal_column_var, width=8
+        ).grid(row=5, column=1, padx=(10, 0), pady=6)
+
+        ttk.Label(frame, text=self._t("label_guesses")).grid(
+            row=6, column=0, sticky=tk.W, pady=6
         )
         guesses_var = tk.StringVar(value=self._guesses_var.get())
         ttk.Entry(frame, textvariable=guesses_var, width=28).grid(
-            row=5, column=1, padx=(10, 0), pady=6
+            row=6, column=1, padx=(10, 0), pady=6
         )
 
         def apply():
@@ -653,11 +717,13 @@ class _App:
             self._tol_var.set(tol_var.get())
             self._workers_var.set(workers_var.get())
             self._mode_var.set(mode_var.get())
+            self._signal_column_var.set(signal_column_var.get())
             self._guesses_var.set(guesses_var.get())
+            self._update_mode_controls()
             dlg.destroy()
 
         btn_frame = ttk.Frame(frame)
-        btn_frame.grid(row=6, column=0, columnspan=2, pady=(16, 0))
+        btn_frame.grid(row=7, column=0, columnspan=2, pady=(16, 0))
         ttk.Button(btn_frame, text="OK", command=apply, width=12).pack(
             side=tk.LEFT, padx=6
         )
@@ -677,6 +743,11 @@ class _App:
         self._log_text.see(tk.END)
         self._log_text.config(state=tk.DISABLED)
 
+    def _set_status(self, key: str, **kwargs) -> None:
+        self._status_key = key
+        self._status_kwargs = kwargs
+        self._status_label.config(text=self._t(key, **kwargs))
+
     def _add_files(self) -> None:
         files = filedialog.askopenfilenames(
             title=self._t("file_dialog_title"),
@@ -690,9 +761,7 @@ class _App:
                 self.selected_files.append(f)
                 self._file_listbox.insert(tk.END, f)
         if files:
-            self._status_label.config(
-                text=self._t("status_files_selected", n=len(self.selected_files))
-            )
+            self._set_status("status_files_selected", n=len(self.selected_files))
 
     def _add_folder(self) -> None:
         d = filedialog.askdirectory(
@@ -700,7 +769,7 @@ class _App:
         )
         if not d:
             return
-        from pyhammi.io import find_trace_files
+        from frethmm.core.io import find_trace_files
 
         found = find_trace_files(d)
         for p in found:
@@ -711,16 +780,12 @@ class _App:
         if not found:
             self._log(self._t("msg_no_traces"), "warning")
         else:
-            self._status_label.config(
-                text=self._t(
-                    "status_files_selected", n=len(self.selected_files)
-                )
-            )
+            self._set_status("status_files_selected", n=len(self.selected_files))
 
     def _clear_files(self) -> None:
         self.selected_files.clear()
         self._file_listbox.delete(0, tk.END)
-        self._status_label.config(text=self._t("status_ready"))
+        self._set_status("status_ready")
 
     def _delete_selected_files(self, _event: tk.Event = None) -> None:
         selected = self._file_listbox.curselection()
@@ -736,9 +801,10 @@ class _App:
                 self.selected_files.remove(p)
             except ValueError:
                 pass
-        self._status_label.config(
-            text=self._t("status_files_selected", n=len(self.selected_files))
-        )
+        if self.selected_files:
+            self._set_status("status_files_selected", n=len(self.selected_files))
+        else:
+            self._set_status("status_ready")
 
     def _select_output(self) -> None:
         d = filedialog.askdirectory(
@@ -747,9 +813,70 @@ class _App:
         if d:
             self.output_dir = d
             self._output_label.config(text=d, foreground="#212121")
+            self._set_status("status_output_selected", path=d)
+
+    def _reset_output(self) -> None:
+        self.output_dir = None
+        self._output_label.config(
+            text=self._t("output_same_as_input"),
+            foreground="#757575",
+        )
+        if self.selected_files:
+            self._set_status("status_files_selected", n=len(self.selected_files))
+        else:
+            self._set_status("status_ready")
+
+    def _on_mode_changed(self, _event: Optional[tk.Event] = None) -> None:
+        self._update_mode_controls()
+
+    def _classified_output_path(
+        self,
+        source_path: Path,
+        output_dir: Optional[str] = None,
+    ) -> Path:
+        base_dir = Path(output_dir) if output_dir else source_path.parent
+        return base_dir / f"{source_path.stem}_classified.csv"
+
+    def _export_selected_classified(self) -> None:
+        selected = self._tree.selection()
+        if not selected:
+            messagebox.showwarning(
+                self._t("msg_no_result_selected_title"),
+                self._t("msg_no_result_selected"),
+            )
+            return
+
+        source_path = Path(selected[0])
+        classified_path = self._classified_outputs.get(str(source_path))
+        if classified_path is None:
+            classified_path = self._classified_output_path(source_path, self.output_dir)
+
+        if not classified_path.exists():
+            messagebox.showerror(
+                self._t("msg_invalid_params"),
+                self._t("msg_export_missing", path=str(classified_path)),
+            )
+            return
+
+        target = filedialog.asksaveasfilename(
+            title=self._t("btn_export_classified"),
+            defaultextension=".csv",
+            initialfile=classified_path.name,
+            filetypes=[("CSV", "*.csv"), (self._t("all_files_label"), "*.*")],
+        )
+        if not target:
+            return
+
+        shutil.copyfile(classified_path, target)
+        self._log(self._t("msg_export_done", path=target), "success")
+
+    def _update_mode_controls(self) -> None:
+        mode = self._mode_var.get()
+        state = "normal" if mode in {"auto", "single_channel"} else "disabled"
+        self._signal_spinbox.config(state=state)
 
     def _build_config(self):
-        from pyhammi.config import HMMConfig
+        from frethmm.domain.models import ClassificationConfig
 
         guesses = None
         g_str = self._guesses_var.get().strip()
@@ -762,6 +889,12 @@ class _App:
         except ValueError:
             raise ValueError(self._t("msg_invalid_tol", v=tol_str))
 
+        signal_column = self._signal_column_var.get()
+        if signal_column < 1:
+            raise ValueError(
+                self._t("msg_invalid_signal_column", v=signal_column)
+            )
+
         n_states = self._states_var.get()
 
         if guesses is not None and len(guesses) != n_states:
@@ -771,20 +904,21 @@ class _App:
                 )
             )
 
-        return HMMConfig(
+        return ClassificationConfig(
             n_states=n_states,
             max_iter=self._iter_var.get(),
             tol=tol,
             guesses=guesses if guesses else None,
             workers=self._workers_var.get(),
             data_mode=self._mode_var.get(),
+            signal_column=signal_column,
         )
 
     def _set_ui_running(self, running: bool) -> None:
         if running:
             self._run_btn.config(state=tk.DISABLED)
             self._cancel_btn.config(state=tk.NORMAL)
-            self._status_label.config(text=self._t("status_running"))
+            self._set_status("status_running")
         else:
             self._run_btn.config(state=tk.NORMAL)
             self._cancel_btn.config(state=tk.DISABLED)
@@ -809,6 +943,8 @@ class _App:
         output_dir = Path(self.output_dir) if self.output_dir else None
         files = [Path(p) for p in self.selected_files]
         config_bytes = pickle.dumps(config)
+        self._result_stats = {"ok": 0, "warnings": 0, "errors": 0}
+        self._classified_outputs = {}
 
         for item in self._tree.get_children():
             self._tree.delete(item)
@@ -841,7 +977,7 @@ class _App:
     def _cancel(self) -> None:
         self._cancel_event.set()
         self._log(self._t("log_cancelling"), "warning")
-        self._status_label.config(text=self._t("status_cancelling"))
+        self._set_status("status_cancelling")
 
     def _poll_queue(self) -> None:
         try:
@@ -858,8 +994,12 @@ class _App:
             payload = msg.payload
             if payload == "status_cancelled":
                 self._log(self._t("status_cancelled"), "warning")
-            elif isinstance(payload, str) and payload == "log_result":
-                pass
+                self._set_status("status_cancelled")
+            elif isinstance(payload, dict) and payload.get("key") == "log_result":
+                self._log(
+                    self._t(payload["key"], **payload.get("kwargs", {})),
+                    "normal",
+                )
             else:
                 self._log(str(payload), "normal")
 
@@ -876,14 +1016,18 @@ class _App:
 
         elif msg.type == _RESULT:
             info: dict = msg.payload
-            fname = Path(info["filepath"]).name
+            source_path = Path(info["filepath"])
+            fname = source_path.name
             r = info.get("result")
             error = info.get("error")
+            result_output_dir = info.get("output_dir")
 
             if error:
+                self._result_stats["errors"] += 1
                 self._tree.insert(
                     "",
                     tk.END,
+                    iid=str(source_path),
                     values=(
                         fname, "", "", "", "",
                         f"Error: {error[:50]}",
@@ -892,22 +1036,31 @@ class _App:
                 )
             elif r is not None:
                 has_warnings = bool(r.warnings)
+                if has_warnings:
+                    self._result_stats["warnings"] += 1
+                else:
+                    self._result_stats["ok"] += 1
                 status = (
                     self._t("status_ok_warnings")
                     if has_warnings
                     else self._t("status_ok")
                 )
                 tag = "warning" if has_warnings else "ok"
-                means_str = ", ".join(f"{m:.4f}" for m in r.means)
+                means_str = ", ".join(f"{m:.4f}" for m in r.state_means)
+                self._classified_outputs[str(source_path)] = self._classified_output_path(
+                    source_path,
+                    result_output_dir,
+                )
                 self._tree.insert(
                     "",
                     tk.END,
+                    iid=str(source_path),
                     values=(
                         fname,
                         r.n_states,
                         f"{r.log_prob:.2f}",
                         means_str,
-                        f"{r.sigma:.4f}",
+                        f"{r.state_sigma:.4f}",
                         status,
                     ),
                     tags=(tag,),
@@ -915,8 +1068,12 @@ class _App:
 
         elif msg.type == _DONE:
             self._log(self._t("log_complete"), "success")
+            self._log(
+                self._t("log_complete_summary", **self._result_stats),
+                "header",
+            )
             self._set_ui_running(False)
-            self._status_label.config(text=self._t("status_complete"))
+            self._set_status("status_complete")
             self._worker_thread = None
             if self._after_id is not None:
                 self.root.after_cancel(self._after_id)
@@ -928,7 +1085,7 @@ class _App:
 
 def run_gui() -> None:
     root = tk.Tk()
-    root.title("pyHaMMy — Single-Molecule HMM Analysis")
+    root.title("FretHMM — Single-Molecule State Classification")
     root.minsize(750, 550)
 
     w, h = 900, 720

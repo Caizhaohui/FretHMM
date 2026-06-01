@@ -1,10 +1,12 @@
 import subprocess
 import sys
 import os
+from pathlib import Path
 
 
 def main():
-    os.chdir(os.path.dirname(os.path.abspath(__file__)))
+    project_root = Path(__file__).resolve().parent
+    os.chdir(project_root)
 
     print("Installing PyInstaller...")
     subprocess.run(
@@ -12,35 +14,13 @@ def main():
         check=True,
     )
 
-    print("Building pyHaMMy.exe...")
+    print("Building FretHMM GUI bundle...")
     args = [
         sys.executable,
         "-m",
         "PyInstaller",
-        "--onefile",
-        "--windowed",
-        "--name",
-        "pyHaMMy",
-        "--add-data",
-        "pyhammi;pyhammi",
-        "--hidden-import",
-        "hmmlearn",
-        "--hidden-import",
-        "sklearn",
-        "--hidden-import",
-        "sklearn.utils._cython_blas",
-        "--hidden-import",
-        "pyhammi.i18n",
-        "--exclude-module",
-        "matplotlib",
-        "--exclude-module",
-        "tkinter.test",
-        "--exclude-module",
-        "unittest",
-        "--exclude-module",
-        "pydoc",
-        "--noupx",
-        "pyhammi/gui.py",
+        "frethmm.spec",
+        "--noconfirm",
     ]
 
     try:
@@ -52,9 +32,8 @@ def main():
         )
         sys.exit(1)
 
-    dist_dir = os.path.abspath("dist")
-    exe_path = os.path.join(dist_dir, "pyHaMMy.exe")
-    print(f"\nBuild successful. pyHaMMy.exe created at: {exe_path}")
+    bundle_dir = project_root / "dist" / "FretHMM"
+    print(f"\nBuild successful. GUI bundle created at: {bundle_dir}")
 
 
 if __name__ == "__main__":

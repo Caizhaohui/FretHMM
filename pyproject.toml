@@ -3,16 +3,15 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pyhammi"
-version = "0.1.0"
-description = "Python rewrite of HaMMy: Hidden Markov Model analysis for single-molecule FRET trajectories"
+name = "frethmm"
+version = "0.3.0"
+description = "FretHMM: Hidden Markov Model state classification for single-molecule trajectories"
 requires-python = ">=3.10"
 dependencies = [
     "numpy>=1.24",
     "scipy>=1.10",
     "hmmlearn>=0.3.0",
     "matplotlib>=3.7",
-    "rich>=13.0",
 ]
 
 [project.optional-dependencies]
@@ -23,9 +22,9 @@ dev = [
 gui = ["pyinstaller>=6.0"]
 
 [project.scripts]
-pyhammi = "pyhammi.cli:main"
-pyhammi-gui = "pyhammi.gui:main"
+frethmm = "frethmm.app.cli:main"
+frethmm-gui = "frethmm.app.gui:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["pyhammi*"]
+include = ["frethmm*"]

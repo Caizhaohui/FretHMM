@@ -1,19 +1,21 @@
-# pyHaMMy
+# FretHMM
 
-[HaMMy](https://github.com/Ha-SingleMoleculeLab/HaMMy) 的 Python 重写版本 — 单分子 FRET 轨迹的隐马尔可夫模型分析工具。
+[HaMMy](https://github.com/Ha-SingleMoleculeLab/HaMMy) 思路启发下开发的单分子时间序列隐马尔可夫模型分类工具。
 
-原版 HaMMy 是一个仅限 Windows 平台的闭源 C 语言 GUI 应用程序，本项目使用 Python 对其核心算法进行了完整重写，在保持输出格式兼容的同时，显著提升了运行效率和跨平台可用性。
+重构路线与执行任务清单见 [docs/FretHMM-refactor-plan.md](./docs/FretHMM-refactor-plan.md)。
+
+FretHMM 当前以两列 `time, signal` 单通道数据为主工作流，同时保留部分 HaMMy 风格输出用于兼容和对照。
 
 ## 与原版 HaMMy 的对比
 
-| 特性 | 原版 HaMMy | pyHaMMy |
+| 特性 | 原版 HaMMy | FretHMM |
 |------|-----------|---------|
 | 平台 | 仅 Windows | 跨平台 (Windows / Linux / macOS) |
 | 源码 | 闭源 (Numerical Recipes in C) | 完全开源 |
 | 界面 | GUI (WinForms) | CLI 命令行 (批量处理 / HPC 友好) |
 | 并行 | 单线程串行 | 多进程并行批处理 |
 | 状态数上限 | 10 | 无限制 |
-| 输出格式 | `*report.dat` / `*path.dat` / `*dwell.dat` | **完全兼容原版格式** |
+| 输出格式 | `*report.dat` / `*path.dat` / `*dwell.dat` | 兼容原版文件布局，持续补充兼容性验证 |
 
 ## 功能特性
 
@@ -21,18 +23,19 @@
 - **Viterbi** 解码，生成理想化状态轨迹
 - **自动检测** 数据格式 (donor/acceptor 对 或 单通道信号)
 - **多进程批处理** 支持大量文件的并行分析
-- **TDP 可视化** (Transition Density Plot)，支持高斯拟合提取动力学速率
-- 输出文件与原版 HaMMy **完全兼容**，可直接用于后续 TDP 分析
+- **TDP 可视化** (Transition Density Plot)，包含高斯速率拟合辅助函数
+- 默认生成 `*_classified.csv` 与 `*_summary.json`
+- 读取原版 HaMMy `report.dat` 样例并保留同类 `report/path/dwell` 兼容输出
 
 ## 安装
 
 ```bash
 # 克隆仓库
-git clone https://github.com/Caizhaohui/pyHaMMy.git
-cd pyHaMMy
+git clone <your-repo-url> FretHMM
+cd FretHMM
 
-# 安装（开发模式）
-pip install -e ".[dev]"
+# 安装（开发模式，含测试与打包依赖）
+pip install -e ".[dev,gui]"
 ```
 
 ## 使用方法
@@ -41,29 +44,32 @@ pip install -e ".[dev]"
 
 ```bash
 # 单文件分析（2态）
-pyhammi run --files trace.csv --states 2 --output-dir ./results/
+frethmm run --files trace.csv --states 2 --output-dir ./results/
 
 # 批量分析目录下所有文件（4个并行进程）
-pyhammi run --input-dir ./traces/ --states 5 --workers 4 --output-dir ./results/
+frethmm run --input-dir ./traces/ --states 5 --workers 4 --output-dir ./results/
 
 # 提供初始猜测值（适用于状态间距较小的情况）
-pyhammi run --files data.csv --states 2 --guesses "0.3,0.7"
+frethmm run --files data.csv --states 2 --guesses "0.3,0.7"
 
 # 详细输出模式
-pyhammi run --files data.csv --states 3 -v
+frethmm run --files data.csv --states 3 -v
 
 # 指定数据模式（单通道）
-pyhammi run --files data.csv --states 2 --mode single_channel
+frethmm run --files data.csv --states 2 --mode single_channel
+
+# 典型两列单分子信号数据
+frethmm run --files ../Values1.csv --states 2 --mode single_channel
 ```
 
 ### TDP 可视化
 
 ```bash
 # 从 report 文件生成转换密度图
-pyhammi tdp --input-dir ./results/ --exposure 0.1
+frethmm tdp --input-dir ./results/ --exposure 0.1
 
 # 保存为图片文件
-pyhammi tdp --input-dir ./results/ --exposure 0.1 --output tdp.png
+frethmm tdp --input-dir ./results/ --exposure 0.1 --output tdp.png
 ```
 
 ### 参数说明
@@ -80,12 +86,12 @@ pyhammi tdp --input-dir ./results/ --exposure 0.1 --output tdp.png
 
 ## GUI 界面
 
-pyHaMMy 提供了一个基于 `tkinter` 的图形用户界面，适合交互式分析和结果预览。
+FretHMM 提供了一个基于 `tkinter` 的图形用户界面，适合交互式分析和结果预览。
 
 ### 启动方式
 
 ```bash
-pyhammi gui
+frethmm gui
 ```
 
 ### 界面说明
@@ -105,13 +111,13 @@ pyhammi gui
 
 ### 打包为可执行文件
 
-如需分发给无 Python 环境的用户，可使用 PyInstaller 构建独立 `.exe` 文件：
+如需分发 GUI 给无 Python 环境的用户，可使用 PyInstaller 构建 Windows bundle：
 
-```bash
+ ```bash
 python build_exe.py
 ```
 
-生成的 `.exe` 文件位于 `dist/` 目录中，无需安装 Python 即可运行。
+生成内容位于 `dist/pyHaMMy/`。当前打包目标是 GUI 分析流程，不包含 `matplotlib`，因此不覆盖 `frethmm tdp` 命令。
 
 ## 输入格式
 
@@ -135,27 +141,34 @@ Time,channel1,channel2
 
 | 文件 | 格式 | 说明 |
 |------|------|------|
-| `*report.dat` | 原版兼容 | 模型参数：状态数、FRET 峰值、sigma、转移概率矩阵 |
-| `*path.dat` | 原版兼容 | 每帧理想化轨迹：`<donor_I> <acceptor_I> <observed_FRET> <idealized_FRET>` |
-| `*dwell.dat` | 原版兼容 | 驻留时间表：`<start_FRET> <stop_FRET> <frames_lasted>` |
+| `*_classified.csv` | 默认输出 | 两列：`time, classified_mean` |
+| `*_summary.json` | 默认输出 | 状态均值、状态占比、转移矩阵、驻留统计、警告信息 |
+| `*report.dat` | 兼容输出 | 模型参数：状态数、峰值、sigma、转移概率矩阵 |
+| `*path.dat` | 兼容输出 | HaMMy 风格路径输出 |
+| `*dwell.dat` | 兼容输出 | 驻留时间表：`<start_mean> <stop_mean> <frames_lasted>` |
 
 ## 项目结构
 
 ```
-pyHaMMy/
-├── pyhammi/
+FretHMM/
+├── frethmm/
 │   ├── __init__.py         # 版本信息
-│   ├── cli.py              # CLI 入口 (argparse)
-│   ├── config.py           # 配置数据类 (HMMConfig, TraceData, HMMResult)
-│   ├── io.py               # 文件读写 (输入轨迹 + 输出报告)
-│   ├── model.py            # HMM 引擎 (hmmlearn 封装)
-│   ├── batch.py            # 多进程批处理器
-│   ├── postprocess.py      # 理想化轨迹 + 驻留时间提取
-│   ├── tdp.py              # TDP 可视化 + 高斯拟合
-│   ├── i18n.py             # 国际化 (英文/中文翻译)
-│   └── gui.py              # GUI 界面 (tkinter, 菜单栏, 多语言)
+│   ├── app/
+│   │   ├── cli.py          # CLI 入口
+│   │   ├── gui.py          # GUI 界面 (tkinter)
+│   │   └── i18n.py         # 国际化 (英文/中文翻译)
+│   ├── core/
+│   │   ├── io.py           # 文件读写 (输入轨迹 + 输出报告)
+│   │   ├── model.py        # HMM 引擎 (hmmlearn 封装)
+│   │   ├── batch.py        # 多进程批处理器
+│   │   └── postprocess.py  # 分类轨迹 + 驻留时间提取
+│   ├── domain/
+│   │   └── models.py       # 配置、输入轨迹、分类结果数据模型
+│   └── viz/
+│       └── tdp.py          # TDP 可视化 + 高斯拟合
 ├── tests/
-│   └── test_io.py          # I/O 单元测试
+│   ├── test_io.py          # I/O 与原版 report 解析测试
+│   └── test_golden.py      # HaMMy 示例输出 golden tests
 ├── pyproject.toml          # 项目配置
 ├── build_exe.py            # PyInstaller 打包脚本
 ├── README.md
@@ -169,6 +182,12 @@ pyHaMMy/
 - SciPy >= 1.10
 - hmmlearn >= 0.3.0
 - matplotlib >= 3.7
+
+## 当前验证范围
+
+- 已有 golden tests 校验 `HaMMy-main` 自带 `report.dat` 样例的解析兼容性
+- 已验证 pyHaMMy 可生成与原版相同命名约定的 `report/path/dwell` 文件
+- 尚未建立“相同输入轨迹下，数值结果与原版 HaMMy 完全一致”的系统性回归基准
 
 ## 致谢
 
@@ -202,10 +221,13 @@ MIT License
 
 **警告处理优化**
 
-- `model.py`：使用 `warnings.catch_warnings(record=True)` 捕获 HMM 拟合过程中的所有警告（收敛失败、数值问题等），过滤 `DeprecationWarning` / `FutureWarning`，存入 `HMMResult.warnings` 字段
-- `config.py`：`HMMResult` 新增 `warnings: list[str]` 字段
+- `model.py`：使用 `warnings.catch_warnings(record=True)` 捕获 HMM 拟合过程中的所有警告（收敛失败、数值问题等），过滤 `DeprecationWarning` / `FutureWarning`，存入 `ClassificationResult.warnings` 字段
+- `models.py`：`ClassificationResult` 包含 `warnings: list[str]` 字段
 - `gui.py`：警告以橙色显示在日志面板中，结果表格中有警告的条目标记为 "OK (warnings)"（橙色）
 - `batch.py` / `cli.py`：分析完成后打印每个文件的警告信息
+- 修复 GUI 后台线程的 `_Msg` 日志消息封装错误
+- 修复按均值排序状态后的 Viterbi 路径重映射错误
+- 新增基于 `HaMMy-main` 官方样例输出的 golden tests
 
 ### v0.1.0 (2026-05-30)
 
@@ -214,5 +236,5 @@ MIT License
 - tkinter GUI（文件选择、参数面板、进度条、结果表格、日志面板）
 - 多进程批处理支持
 - TDP 可视化
-- 输出格式与原版 HaMMy 完全兼容（`*report.dat` / `*path.dat` / `*dwell.dat`）
-- PyInstaller 打包为独立 `.exe` 文件
+- 生成 `report/path/dwell` 输出
+- 提供 PyInstaller GUI 打包脚本

@@ -28,3 +28,5 @@ htmlcov/
 
 # Output
 output/
+_values2_verify/
+_verify_legacy_split/
