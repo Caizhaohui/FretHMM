@@ -1,4 +1,4 @@
-"""tkinter GUI for FretHMM — lazy imports for fast startup, i18n, menu bar."""
+"""customtkinter GUI for FretHMM — lazy imports, i18n, menu bar, and lightweight result summary panel."""
 
 from __future__ import annotations
 
@@ -8,11 +8,13 @@ import platform
 import queue
 import shutil
 import threading
+from dataclasses import dataclass
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Any, Optional
 
 import tkinter as tk
+import customtkinter as ctk
 
 _VERSION = "0.3.0"
 try:
@@ -28,6 +30,18 @@ _ERROR = "error"
 _WARNING = "warning"
 
 
+@dataclass
+class _FolderBatchJob:
+    folder: str
+    n_states: int
+    max_iter: int
+    tol: float
+    workers: int
+    data_mode: str
+    signal_column: int
+    guesses_text: str = ""
+
+
 class _Msg:
     __slots__ = ("type", "payload")
 
@@ -37,22 +51,26 @@ class _Msg:
 
 
 def _worker(
-    files: list[Path],
-    config_bytes: bytes,
-    output_dir: Optional[Path],
+    tasks: list[dict[str, Any]],
     cancel_event: threading.Event,
     result_queue: queue.Queue[_Msg],
 ) -> None:
     import pickle
     from frethmm.core.model import process_trace_file
 
-    config = pickle.loads(config_bytes)
-    total = len(files)
-    for i, fp in enumerate(files):
+    total = len(tasks)
+    for i, task in enumerate(tasks):
         if cancel_event.is_set():
             result_queue.put(_Msg(_LOG, "status_cancelled"))
             break
 
+        fp = Path(task["filepath"])
+        config = pickle.loads(task["config_bytes"])
+        output_dir = (
+            Path(task["output_dir"])
+            if task.get("output_dir") is not None
+            else None
+        )
         result_queue.put(_Msg(_LOG, f"[{i + 1}/{total}] {fp.name}"))
         result_queue.put(_Msg(_PROGRESS, {"current": i + 1, "total": total}))
 
@@ -122,79 +140,12 @@ def _detect_fonts() -> dict[str, tuple[str, int, str]]:
     }
 
 
-def _configure_styles(root: tk.Tk, fonts: dict) -> ttk.Style:
-    style = ttk.Style(root)
-
-    available = style.theme_names()
-    if "clam" in available:
-        style.theme_use("clam")
-
-    bg = "#f5f5f5"
-    fg = "#212121"
-    accent = "#1565C0"
-    field_bg = "#ffffff"
-    select_bg = "#BBDEFB"
-
-    style.configure(".", background=bg, foreground=fg, font=fonts["label"])
-    style.configure("TFrame", background=bg)
-    style.configure("TLabel", background=bg, foreground=fg, font=fonts["label"])
-    style.configure(
-        "TLabelframe", background=bg, foreground=fg, font=fonts["heading"]
-    )
-    style.configure(
-        "TLabelframe.Label",
-        background=bg,
-        foreground=accent,
-        font=fonts["heading"],
-    )
-    style.configure("TButton", font=fonts["button"], padding=(12, 6))
-    style.configure("TEntry", font=fonts["entry"], fieldbackground=field_bg)
-    style.configure("TSpinbox", font=fonts["entry"], fieldbackground=field_bg)
-    style.configure("TCombobox", font=fonts["entry"], fieldbackground=field_bg)
-
-    style.configure(
-        "Treeview",
-        font=fonts["tree"],
-        background=field_bg,
-        foreground=fg,
-        fieldbackground=field_bg,
-        rowheight=28,
-    )
-    style.configure(
-        "Treeview.Heading",
-        font=fonts["tree_heading"],
-        background="#e0e0e0",
-        foreground=fg,
-    )
-    style.map(
-        "Treeview",
-        background=[("selected", select_bg)],
-        foreground=[("selected", accent)],
-    )
-
-    style.configure(
-        "Horizontal.TProgressbar",
-        troughcolor="#e0e0e0",
-        background=accent,
-        thickness=22,
-    )
-
-    style.configure("Status.TLabel", font=fonts["status"], foreground="#757575")
-
-    style.configure(
-        "Accent.TButton",
-        font=(fonts["button"][0], 11, "bold"),
-        padding=(20, 8),
-    )
-
-    return style
-
-
 class _App:
-    def __init__(self, root: tk.Tk, fonts: dict) -> None:
+    def __init__(self, root: ctk.CTk, fonts: dict) -> None:
         self.root = root
         self.fonts = fonts
         self.selected_files: list[str] = []
+        self.folder_jobs: list[_FolderBatchJob] = []
         self.output_dir: Optional[str] = None
         self._worker_thread: Optional[threading.Thread] = None
         self._cancel_event = threading.Event()
@@ -203,8 +154,12 @@ class _App:
         self._lang = "en"
         self._status_key = "status_ready"
         self._status_kwargs: dict[str, Any] = {}
+        self._progress_text = "0/0"
         self._result_stats = {"ok": 0, "warnings": 0, "errors": 0}
         self._classified_outputs: dict[str, Path] = {}
+        self._results_map: dict[str, Any] = {}
+        self._selected_result_path: Optional[str] = None
+        self._last_output_path: Optional[str] = None
 
     def _t(self, key: str, **kwargs) -> str:
         from frethmm.app.i18n import t, get_language
@@ -217,34 +172,62 @@ class _App:
     def build(self) -> None:
         self._build_menu()
 
-        main = ttk.Frame(self.root, padding=(16, 12, 16, 8))
-        main.pack(fill=tk.BOTH, expand=True)
+        # Layout Split: Left (Scrollable Controls), Right (Result Summary)
+        main_layout = ctk.CTkFrame(self.root, fg_color="transparent")
+        main_layout.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        title_frame = ttk.Frame(main)
+        left_container = ctk.CTkFrame(main_layout, fg_color="transparent")
+        left_container.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
+
+        left_scroll = ctk.CTkScrollableFrame(left_container, width=540, label_text="")
+        left_scroll.pack(fill=tk.BOTH, expand=True)
+
+        right_frame = ctk.CTkFrame(main_layout, corner_radius=10)
+        right_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # Header Frame in left scroll
+        title_frame = ctk.CTkFrame(left_scroll, fg_color="transparent")
         title_frame.pack(fill=tk.X, pady=(0, 10))
-        self._title_label = ttk.Label(
+        self._title_label = ctk.CTkLabel(
             title_frame,
             text="FretHMM",
-            font=self.fonts["title"],
-            foreground="#1565C0",
+            font=ctk.CTkFont(family=self.fonts["title"][0], size=22, weight="bold"),
+            text_color="#1565C0",
         )
         self._title_label.pack(side=tk.LEFT)
-        self._subtitle_label = ttk.Label(
+        self._subtitle_label = ctk.CTkLabel(
             title_frame,
             text=f"  {self._t('subtitle')}  v{_VERSION}",
-            font=self.fonts["label"],
-            foreground="#757575",
+            font=ctk.CTkFont(family=self.fonts["label"][0], size=12),
+            text_color="#757575",
         )
-        self._subtitle_label.pack(side=tk.LEFT, padx=(8, 0))
+        self._subtitle_label.pack(side=tk.LEFT, padx=(8, 0), pady=(8, 0))
 
-        self._build_files_section(main)
-        self._build_params_section(main)
-        self._build_output_section(main)
-        self._build_action_section(main)
-        self._build_results_section(main)
-        self._build_log_section(main)
-        self._build_status_bar(main)
+        # Dynamic Theme Toggle
+        self._theme_btn = ctk.CTkButton(
+            title_frame,
+            text="🌓 Theme",
+            width=60,
+            height=26,
+            command=self._toggle_theme,
+        )
+        self._theme_btn.pack(side=tk.RIGHT)
+
+        self._build_files_section(left_scroll)
+        self._build_folder_jobs_section(left_scroll)
+        self._build_params_section(left_scroll)
+        self._build_output_section(left_scroll)
+        self._build_action_section(left_scroll)
+        self._build_results_section(left_scroll)
+        self._build_log_section(left_scroll)
+        self._build_status_bar(left_scroll)
+        
+        # Build Visualization Canvas
+        self._build_result_summary_panel(right_frame)
         self._update_mode_controls()
+
+        # Update styling colors for the first time
+        self._update_component_colors()
 
     def _build_menu(self) -> None:
         menubar = tk.Menu(self.root)
@@ -284,9 +267,28 @@ class _App:
         settings_menu.add_cascade(
             label=self._t("menu_settings_lang"), menu=lang_menu
         )
+
+        theme_menu = tk.Menu(settings_menu, tearoff=0)
+        theme_menu.add_command(
+            label=self._t("menu_settings_theme_light"),
+            command=lambda: self._set_theme("Light"),
+        )
+        theme_menu.add_command(
+            label=self._t("menu_settings_theme_dark"),
+            command=lambda: self._set_theme("Dark"),
+        )
+        theme_menu.add_command(
+            label=self._t("menu_settings_theme_system"),
+            command=lambda: self._set_theme("System"),
+        )
+        settings_menu.add_cascade(
+            label=self._t("menu_settings_theme"), menu=theme_menu
+        )
+
         menubar.add_cascade(label=self._t("menu_settings"), menu=settings_menu)
         self._settings_menu = settings_menu
         self._lang_menu = lang_menu
+        self._theme_menu = theme_menu
 
         help_menu = tk.Menu(menubar, tearoff=0)
         help_menu.add_command(
@@ -298,35 +300,39 @@ class _App:
         self.root.config(menu=menubar)
         self._menubar = menubar
 
-    def _build_files_section(self, parent: ttk.Frame) -> None:
-        self._file_frame = ttk.LabelFrame(
-            parent, text=f" {self._t('section_files')} ", padding=(10, 8)
-        )
-        self._file_frame.pack(fill=tk.X, pady=(0, 8))
+    def _build_files_section(self, parent: ctk.CTkFrame) -> None:
+        self._file_frame = ctk.CTkFrame(parent)
+        self._file_frame.pack(fill=tk.X, pady=(0, 8), padx=2)
+        
+        lbl = ctk.CTkLabel(self._file_frame, text=self._t('section_files'), font=ctk.CTkFont(weight="bold"))
+        lbl.pack(anchor=tk.W, padx=10, pady=5)
 
-        btn_row = ttk.Frame(self._file_frame)
-        btn_row.pack(fill=tk.X)
-        self._btn_add = ttk.Button(
-            btn_row, text=self._t("btn_add_files"), command=self._add_files
+        btn_row = ctk.CTkFrame(self._file_frame, fg_color="transparent")
+        btn_row.pack(fill=tk.X, padx=10, pady=5)
+        self._btn_add = ctk.CTkButton(
+            btn_row, text=self._t("btn_add_files"), command=self._add_files, width=90
         )
         self._btn_add.pack(side=tk.LEFT, padx=(0, 6))
-        self._btn_folder = ttk.Button(
-            btn_row, text=self._t("btn_add_folder"), command=self._add_folder
+        self._btn_folder = ctk.CTkButton(
+            btn_row, text=self._t("btn_add_folder"), command=self._add_folder, width=90
         )
         self._btn_folder.pack(side=tk.LEFT, padx=(0, 6))
-        self._btn_clear = ttk.Button(
-            btn_row, text=self._t("btn_clear"), command=self._clear_files
+        self._btn_clear = ctk.CTkButton(
+            btn_row, text=self._t("btn_clear"), command=self._clear_files, width=80, fg_color="#757575"
         )
         self._btn_clear.pack(side=tk.LEFT)
-        self._btn_remove = ttk.Button(
+        self._btn_remove = ctk.CTkButton(
             btn_row,
             text=self._t("btn_remove_selected"),
             command=self._delete_selected_files,
+            width=110,
+            fg_color="#c62828",
+            hover_color="#b71c1c"
         )
         self._btn_remove.pack(side=tk.LEFT, padx=(6, 0))
 
-        list_frame = ttk.Frame(self._file_frame)
-        list_frame.pack(fill=tk.X, pady=(6, 0))
+        list_frame = ctk.CTkFrame(self._file_frame, fg_color="transparent")
+        list_frame.pack(fill=tk.X, pady=(6, 5), padx=10)
         scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL)
         self._file_listbox = tk.Listbox(
             list_frame,
@@ -334,166 +340,233 @@ class _App:
             selectmode=tk.EXTENDED,
             yscrollcommand=scrollbar.set,
             font=self.fonts["entry"],
-            bg="#ffffff",
-            selectbackground="#BBDEFB",
-            selectforeground="#1565C0",
             relief=tk.FLAT,
             highlightthickness=1,
-            highlightcolor="#90CAF9",
-            highlightbackground="#bdbdbd",
         )
         scrollbar.config(command=self._file_listbox.yview)
         self._file_listbox.pack(side=tk.LEFT, fill=tk.X, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self._file_listbox.bind("<Delete>", self._delete_selected_files)
 
-    def _build_params_section(self, parent: ttk.Frame) -> None:
-        self._param_frame = ttk.LabelFrame(
-            parent, text=f" {self._t('section_params')} ", padding=(10, 8)
-        )
-        self._param_frame.pack(fill=tk.X, pady=(0, 8))
+    def _build_folder_jobs_section(self, parent: ctk.CTkFrame) -> None:
+        self._folder_frame = ctk.CTkFrame(parent)
+        self._folder_frame.pack(fill=tk.X, pady=(0, 8), padx=2)
+        
+        lbl = ctk.CTkLabel(self._folder_frame, text=self._t('section_folder_jobs'), font=ctk.CTkFont(weight="bold"))
+        lbl.pack(anchor=tk.W, padx=10, pady=5)
 
-        row1 = ttk.Frame(self._param_frame)
-        row1.pack(fill=tk.X, pady=3)
-        self._lbl_states = ttk.Label(row1, text=self._t("label_states"))
-        self._lbl_states.pack(side=tk.LEFT)
-        self._states_var = tk.IntVar(value=2)
-        ttk.Spinbox(
-            row1, from_=1, to=30, textvariable=self._states_var, width=5
-        ).pack(side=tk.LEFT, padx=(4, 16))
-        self._lbl_guesses = ttk.Label(
-            row1, text=self._t("label_guesses")
+        btn_row = ctk.CTkFrame(self._folder_frame, fg_color="transparent")
+        btn_row.pack(fill=tk.X, padx=10, pady=5)
+        self._btn_add_state_folder = ctk.CTkButton(
+            btn_row,
+            text=self._t("btn_add_state_folder"),
+            command=self._add_state_folder_job,
+            width=110
         )
+        self._btn_add_state_folder.pack(side=tk.LEFT, padx=(0, 6))
+        self._btn_remove_state_folder = ctk.CTkButton(
+            btn_row,
+            text=self._t("btn_remove_state_folder"),
+            command=self._remove_selected_folder_jobs,
+            width=120,
+            fg_color="#c62828",
+            hover_color="#b71c1c"
+        )
+        self._btn_remove_state_folder.pack(side=tk.LEFT, padx=(0, 6))
+        self._btn_clear_state_folders = ctk.CTkButton(
+            btn_row,
+            text=self._t("btn_clear_state_folders"),
+            command=self._clear_folder_jobs,
+            width=80,
+            fg_color="#757575"
+        )
+        self._btn_clear_state_folders.pack(side=tk.LEFT)
+
+        # Treeview frame
+        tree_frame = ctk.CTkFrame(self._folder_frame, fg_color="transparent")
+        tree_frame.pack(fill=tk.X, pady=(6, 5), padx=10)
+        columns = ("folder", "states", "mode", "signal_column", "files")
+        self._folder_tree = ttk.Treeview(
+            tree_frame,
+            columns=columns,
+            show="headings",
+            height=3,
+        )
+        self._folder_tree.heading("folder", text=self._t("col_folder"))
+        self._folder_tree.heading("states", text=self._t("col_states"))
+        self._folder_tree.heading("mode", text=self._t("col_mode"))
+        self._folder_tree.heading("signal_column", text=self._t("col_signal_column"))
+        self._folder_tree.heading("files", text=self._t("col_files"))
+        self._folder_tree.column("folder", width=200, minwidth=100)
+        self._folder_tree.column("states", width=60, minwidth=50, anchor=tk.CENTER)
+        self._folder_tree.column("mode", width=100, minwidth=80, anchor=tk.CENTER)
+        self._folder_tree.column(
+            "signal_column", width=80, minwidth=60, anchor=tk.CENTER
+        )
+        self._folder_tree.column("files", width=60, minwidth=50, anchor=tk.CENTER)
+        folder_scroll = ttk.Scrollbar(
+            tree_frame, orient=tk.VERTICAL, command=self._folder_tree.yview
+        )
+        self._folder_tree.configure(yscrollcommand=folder_scroll.set)
+        self._folder_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        folder_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+    def _build_params_section(self, parent: ctk.CTkFrame) -> None:
+        self._param_frame = ctk.CTkFrame(parent)
+        self._param_frame.pack(fill=tk.X, pady=(0, 8), padx=2)
+        
+        lbl = ctk.CTkLabel(self._param_frame, text=self._t('section_params'), font=ctk.CTkFont(weight="bold"))
+        lbl.pack(anchor=tk.W, padx=10, pady=5)
+
+        row1 = ctk.CTkFrame(self._param_frame, fg_color="transparent")
+        row1.pack(fill=tk.X, pady=3, padx=10)
+        self._lbl_states = ctk.CTkLabel(row1, text=self._t("label_states"))
+        self._lbl_states.pack(side=tk.LEFT)
+        
+        self._states_var = tk.IntVar(value=2)
+        self._states_entry = ctk.CTkEntry(row1, textvariable=self._states_var, width=50)
+        self._states_entry.pack(side=tk.LEFT, padx=(4, 16))
+        
+        self._lbl_guesses = ctk.CTkLabel(row1, text=self._t("label_guesses"))
         self._lbl_guesses.pack(side=tk.LEFT)
         self._guesses_var = tk.StringVar()
-        ttk.Entry(row1, textvariable=self._guesses_var, width=28).pack(
-            side=tk.LEFT, padx=(4, 0)
-        )
+        self._guesses_entry = ctk.CTkEntry(row1, textvariable=self._guesses_var, width=150)
+        self._guesses_entry.pack(side=tk.LEFT, padx=(4, 0))
 
-        row2 = ttk.Frame(self._param_frame)
-        row2.pack(fill=tk.X, pady=3)
-        self._lbl_iter = ttk.Label(row2, text=self._t("label_max_iter"))
+        row2 = ctk.CTkFrame(self._param_frame, fg_color="transparent")
+        row2.pack(fill=tk.X, pady=3, padx=10)
+        self._lbl_iter = ctk.CTkLabel(row2, text=self._t("label_max_iter"))
         self._lbl_iter.pack(side=tk.LEFT)
         self._iter_var = tk.IntVar(value=500)
-        ttk.Spinbox(
-            row2, from_=10, to=100000, textvariable=self._iter_var, width=7
-        ).pack(side=tk.LEFT, padx=(4, 16))
-        self._lbl_tol = ttk.Label(row2, text=self._t("label_tolerance"))
+        self._iter_entry = ctk.CTkEntry(row2, textvariable=self._iter_var, width=60)
+        self._iter_entry.pack(side=tk.LEFT, padx=(4, 16))
+        
+        self._lbl_tol = ctk.CTkLabel(row2, text=self._t("label_tolerance"))
         self._lbl_tol.pack(side=tk.LEFT)
         self._tol_var = tk.StringVar(value="1e-4")
-        ttk.Entry(row2, textvariable=self._tol_var, width=10).pack(
-            side=tk.LEFT, padx=(4, 16)
-        )
-        self._lbl_workers = ttk.Label(row2, text=self._t("label_workers"))
+        self._tol_entry = ctk.CTkEntry(row2, textvariable=self._tol_var, width=70)
+        self._tol_entry.pack(side=tk.LEFT, padx=(4, 16))
+        
+        self._lbl_workers = ctk.CTkLabel(row2, text=self._t("label_workers"))
         self._lbl_workers.pack(side=tk.LEFT)
         self._workers_var = tk.IntVar(value=1)
-        ttk.Spinbox(
-            row2, from_=1, to=32, textvariable=self._workers_var, width=4
-        ).pack(side=tk.LEFT, padx=(4, 0))
+        self._workers_entry = ctk.CTkEntry(row2, textvariable=self._workers_var, width=50)
+        self._workers_entry.pack(side=tk.LEFT, padx=(4, 0))
 
-        row3 = ttk.Frame(self._param_frame)
-        row3.pack(fill=tk.X, pady=3)
-        self._lbl_mode = ttk.Label(row3, text=self._t("label_data_mode"))
+        row3 = ctk.CTkFrame(self._param_frame, fg_color="transparent")
+        row3.pack(fill=tk.X, pady=3, padx=10)
+        self._lbl_mode = ctk.CTkLabel(row3, text=self._t("label_data_mode"))
         self._lbl_mode.pack(side=tk.LEFT)
         self._mode_var = tk.StringVar(value="auto")
-        self._mode_combo = ttk.Combobox(
+        self._mode_combo = ctk.CTkComboBox(
             row3,
-            textvariable=self._mode_var,
-            width=18,
+            variable=self._mode_var,
+            width=140,
             values=["auto", "paired_channel", "single_channel"],
-            state="readonly",
+            command=self._on_mode_changed,
         )
         self._mode_combo.pack(side=tk.LEFT, padx=(4, 16))
-        self._mode_combo.bind("<<ComboboxSelected>>", self._on_mode_changed)
-        self._lbl_signal_column = ttk.Label(
-            row3, text=self._t("label_signal_column")
-        )
+        
+        self._lbl_signal_column = ctk.CTkLabel(row3, text=self._t("label_signal_column"))
         self._lbl_signal_column.pack(side=tk.LEFT)
         self._signal_column_var = tk.IntVar(value=1)
-        self._signal_spinbox = ttk.Spinbox(
+        self._signal_entry = ctk.CTkEntry(
             row3,
-            from_=1,
-            to=32,
             textvariable=self._signal_column_var,
-            width=4,
+            width=50,
         )
-        self._signal_spinbox.pack(side=tk.LEFT, padx=(4, 0))
+        self._signal_entry.pack(side=tk.LEFT, padx=(4, 0))
 
-    def _build_output_section(self, parent: ttk.Frame) -> None:
-        self._out_frame = ttk.LabelFrame(
-            parent, text=f" {self._t('section_output')} ", padding=(10, 8)
-        )
-        self._out_frame.pack(fill=tk.X, pady=(0, 8))
-        out_row = ttk.Frame(self._out_frame)
-        out_row.pack(fill=tk.X)
-        self._btn_output = ttk.Button(
-            out_row, text=self._t("btn_output_folder"), command=self._select_output
+    def _build_output_section(self, parent: ctk.CTkFrame) -> None:
+        self._out_frame = ctk.CTkFrame(parent)
+        self._out_frame.pack(fill=tk.X, pady=(0, 8), padx=2)
+        
+        lbl = ctk.CTkLabel(self._out_frame, text=self._t('section_output'), font=ctk.CTkFont(weight="bold"))
+        lbl.pack(anchor=tk.W, padx=10, pady=5)
+        
+        out_row = ctk.CTkFrame(self._out_frame, fg_color="transparent")
+        out_row.pack(fill=tk.X, padx=10, pady=5)
+        self._btn_output = ctk.CTkButton(
+            out_row, text=self._t("btn_output_folder"), command=self._select_output, width=120
         )
         self._btn_output.pack(side=tk.LEFT, padx=(0, 8))
-        self._btn_output_reset = ttk.Button(
+        self._btn_output_reset = ctk.CTkButton(
             out_row,
             text=self._t("btn_output_reset"),
             command=self._reset_output,
+            width=120,
+            fg_color="#757575"
         )
         self._btn_output_reset.pack(side=tk.LEFT, padx=(0, 8))
-        self._btn_export_classified = ttk.Button(
+        self._btn_export_classified = ctk.CTkButton(
             out_row,
             text=self._t("btn_export_classified"),
             command=self._export_selected_classified,
+            width=140
         )
         self._btn_export_classified.pack(side=tk.LEFT, padx=(0, 8))
-        self._output_label = ttk.Label(
+        self._output_label = ctk.CTkLabel(
             out_row,
             text=self._t("output_same_as_input"),
-            foreground="#757575",
+            text_color="#757575",
         )
         self._output_label.pack(side=tk.LEFT)
 
-    def _build_action_section(self, parent: ttk.Frame) -> None:
-        self._act_frame = ttk.Frame(parent)
-        self._act_frame.pack(fill=tk.X, pady=(0, 8))
+    def _build_action_section(self, parent: ctk.CTkFrame) -> None:
+        self._act_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        self._act_frame.pack(fill=tk.X, pady=(0, 8), padx=2)
 
-        self._run_btn = ttk.Button(
+        self._run_btn = ctk.CTkButton(
             self._act_frame,
             text=self._t("btn_run"),
             command=self._run,
-            style="Accent.TButton",
+            font=ctk.CTkFont(weight="bold"),
+            fg_color="#1565C0",
+            hover_color="#0d47a1",
+            width=120
         )
         self._run_btn.pack(side=tk.LEFT, padx=(0, 8))
-        self._cancel_btn = ttk.Button(
+        
+        self._cancel_btn = ctk.CTkButton(
             self._act_frame,
             text=self._t("btn_cancel"),
             command=self._cancel,
-            state=tk.DISABLED,
+            state="disabled",
+            fg_color="#c62828",
+            hover_color="#b71c1c",
+            width=90
         )
         self._cancel_btn.pack(side=tk.LEFT, padx=(0, 16))
 
-        self._progress_bar = ttk.Progressbar(
+        self._progress_bar = ctk.CTkProgressBar(
             self._act_frame,
-            maximum=100,
-            mode="determinate",
-            style="Horizontal.TProgressbar",
+            width=150,
         )
+        self._progress_bar.set(0)
         self._progress_bar.pack(
             side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8)
         )
-        self._progress_label = ttk.Label(
-            self._act_frame, text="", width=10, anchor=tk.E
+        self._progress_label = ctk.CTkLabel(
+            self._act_frame, text="", width=60, anchor=tk.E
         )
         self._progress_label.pack(side=tk.RIGHT)
 
-    def _build_results_section(self, parent: ttk.Frame) -> None:
-        self._results_frame = ttk.LabelFrame(
-            parent, text=f" {self._t('section_results')} ", padding=(10, 8)
-        )
-        self._results_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
+    def _build_results_section(self, parent: ctk.CTkFrame) -> None:
+        self._results_frame = ctk.CTkFrame(parent)
+        self._results_frame.pack(fill=tk.X, pady=(0, 8), padx=2)
+        
+        lbl = ctk.CTkLabel(self._results_frame, text=self._t('section_results'), font=ctk.CTkFont(weight="bold"))
+        lbl.pack(anchor=tk.W, padx=10, pady=5)
 
+        # Treeview frame
+        tree_frame = ctk.CTkFrame(self._results_frame, fg_color="transparent")
+        tree_frame.pack(fill=tk.X, pady=(6, 5), padx=10)
         columns = ("file", "states", "log_prob", "means", "sigma", "status")
         self._tree = ttk.Treeview(
-            self._results_frame,
+            tree_frame,
             columns=columns,
             show="headings",
-            height=6,
+            height=5,
         )
         self._tree.heading("file", text=self._t("col_file"))
         self._tree.heading("states", text=self._t("col_states"))
@@ -502,15 +575,15 @@ class _App:
         self._tree.heading("sigma", text=self._t("col_sigma"))
         self._tree.heading("status", text=self._t("col_status"))
 
-        self._tree.column("file", width=180, minwidth=100)
-        self._tree.column("states", width=60, minwidth=50, anchor=tk.CENTER)
-        self._tree.column("log_prob", width=100, minwidth=70, anchor=tk.CENTER)
-        self._tree.column("means", width=180, minwidth=100)
-        self._tree.column("sigma", width=80, minwidth=60, anchor=tk.CENTER)
-        self._tree.column("status", width=100, minwidth=60, anchor=tk.CENTER)
+        self._tree.column("file", width=120, minwidth=80)
+        self._tree.column("states", width=50, minwidth=40, anchor=tk.CENTER)
+        self._tree.column("log_prob", width=80, minwidth=60, anchor=tk.CENTER)
+        self._tree.column("means", width=120, minwidth=80)
+        self._tree.column("sigma", width=60, minwidth=50, anchor=tk.CENTER)
+        self._tree.column("status", width=80, minwidth=50, anchor=tk.CENTER)
 
         tree_scroll = ttk.Scrollbar(
-            self._results_frame, orient=tk.VERTICAL, command=self._tree.yview
+            tree_frame, orient=tk.VERTICAL, command=self._tree.yview
         )
         self._tree.configure(yscrollcommand=tree_scroll.set)
         self._tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -519,50 +592,235 @@ class _App:
         self._tree.tag_configure("ok", foreground="#2E7D32")
         self._tree.tag_configure("warning", foreground="#E65100")
         self._tree.tag_configure("error", foreground="#C62828")
+        self._tree.bind("<<TreeviewSelect>>", self._on_result_selected)
 
-    def _build_log_section(self, parent: ttk.Frame) -> None:
-        self._log_frame = ttk.LabelFrame(
-            parent, text=f" {self._t('section_log')} ", padding=(10, 8)
-        )
-        self._log_frame.pack(fill=tk.BOTH, expand=True)
+    def _build_log_section(self, parent: ctk.CTkFrame) -> None:
+        self._log_frame = ctk.CTkFrame(parent)
+        self._log_frame.pack(fill=tk.X, pady=(0, 8), padx=2)
+        
+        lbl = ctk.CTkLabel(self._log_frame, text=self._t('section_log'), font=ctk.CTkFont(weight="bold"))
+        lbl.pack(anchor=tk.W, padx=10, pady=5)
 
+        # Log Text
+        log_frame = ctk.CTkFrame(self._log_frame, fg_color="transparent")
+        log_frame.pack(fill=tk.X, pady=(6, 5), padx=10)
         self._log_text = tk.Text(
-            self._log_frame,
-            height=6,
+            log_frame,
+            height=5,
             state=tk.DISABLED,
             font=self.fonts["log"],
             wrap=tk.WORD,
-            bg="#ffffff",
             relief=tk.FLAT,
             highlightthickness=1,
-            highlightcolor="#90CAF9",
-            highlightbackground="#bdbdbd",
             padx=8,
             pady=6,
         )
-        self._log_text.tag_configure("normal", foreground="#212121")
+        self._log_text.tag_configure("normal")
         self._log_text.tag_configure("warning", foreground="#E65100")
         self._log_text.tag_configure("error", foreground="#C62828")
         self._log_text.tag_configure("success", foreground="#2E7D32")
         self._log_text.tag_configure("header", foreground="#1565C0")
 
         log_scroll = ttk.Scrollbar(
-            self._log_frame, orient=tk.VERTICAL, command=self._log_text.yview
+            log_frame, orient=tk.VERTICAL, command=self._log_text.yview
         )
         self._log_text.configure(yscrollcommand=log_scroll.set)
         self._log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         log_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
-    def _build_status_bar(self, parent: ttk.Frame) -> None:
-        status_frame = ttk.Frame(parent)
-        status_frame.pack(fill=tk.X, pady=(6, 0))
-        self._status_label = ttk.Label(
-            status_frame, text=self._t("status_ready"), style="Status.TLabel"
+    def _build_status_bar(self, parent: ctk.CTkFrame) -> None:
+        status_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        status_frame.pack(fill=tk.X, pady=(4, 0), padx=5)
+        self._status_label = ctk.CTkLabel(
+            status_frame, text=self._t("status_ready"), text_color="#757575"
         )
         self._status_label.pack(side=tk.LEFT)
-        ttk.Label(
-            status_frame, text=f"v{_VERSION}", style="Status.TLabel"
+        ctk.CTkLabel(
+            status_frame, text=f"v{_VERSION}", text_color="#757575"
         ).pack(side=tk.RIGHT)
+
+    def _build_result_summary_panel(self, parent: ctk.CTkFrame) -> None:
+        self._viz_frame = ctk.CTkFrame(parent)
+        self._viz_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        lbl = ctk.CTkLabel(
+            self._viz_frame,
+            text=self._t("section_runtime_panel"),
+            font=ctk.CTkFont(size=14, weight="bold"),
+        )
+        lbl.pack(anchor=tk.W, padx=10, pady=5)
+
+        self._result_summary_label = lbl
+        runtime_frame = ctk.CTkFrame(self._viz_frame)
+        runtime_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
+        self._runtime_frame = runtime_frame
+
+        self._runtime_status_label, self._runtime_status_value = self._make_summary_row(
+            runtime_frame, "runtime_status", self._t(self._status_key, **self._status_kwargs)
+        )
+        self._runtime_progress_label, self._runtime_progress_value = self._make_summary_row(
+            runtime_frame, "runtime_progress", self._progress_text
+        )
+        self._runtime_summary_label, self._runtime_summary_value = self._make_summary_row(
+            runtime_frame, "runtime_summary",
+            self._t("runtime_summary_value", ok=0, warnings=0, errors=0),
+        )
+        self._runtime_output_label, self._runtime_output_value = self._make_summary_row(
+            runtime_frame, "runtime_last_output", self._t("result_panel_none")
+        )
+
+        selection_frame = ctk.CTkFrame(self._viz_frame)
+        selection_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+        self._selection_frame = selection_frame
+        self._selection_title_label = ctk.CTkLabel(
+            selection_frame,
+            text=self._t("section_result_details"),
+            font=ctk.CTkFont(size=13, weight="bold"),
+        )
+        self._selection_title_label.pack(anchor=tk.W, padx=10, pady=(8, 4))
+        self._result_file_label, self._result_file_value = self._make_summary_row(
+            selection_frame, "result_file", self._t("result_panel_none")
+        )
+        self._result_output_label, self._result_output_value = self._make_summary_row(
+            selection_frame, "result_output", self._t("result_panel_none")
+        )
+        self._result_metrics_label, self._result_metrics_value = self._make_summary_row(
+            selection_frame, "result_metrics", self._t("result_panel_none")
+        )
+        self._result_warning_label, self._result_warning_value = self._make_summary_row(
+            selection_frame, "result_warnings", self._t("result_panel_none")
+        )
+        self._set_result_summary(None)
+
+    def _make_summary_row(
+        self,
+        parent: ctk.CTkFrame,
+        label_key: str,
+        value_text: str,
+    ) -> tuple[ctk.CTkLabel, ctk.CTkLabel]:
+        row = ctk.CTkFrame(parent, fg_color="transparent")
+        row.pack(fill=tk.X, padx=10, pady=(3, 0))
+        label = ctk.CTkLabel(
+            row,
+            text=self._t(label_key),
+            width=115,
+            anchor=tk.W,
+        )
+        label.pack(side=tk.LEFT)
+        value = ctk.CTkLabel(
+            row,
+            text=value_text,
+            anchor=tk.W,
+            justify=tk.LEFT,
+            wraplength=360,
+        )
+        value.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        return label, value
+
+    def _on_result_selected(self, _event: Optional[tk.Event] = None) -> None:
+        selected = self._tree.selection()
+        if not selected:
+            self._selected_result_path = None
+            self._set_result_summary(None)
+            return
+
+        self._selected_result_path = selected[0]
+        self._set_result_summary(selected[0])
+
+    def _set_result_summary(self, filepath: Optional[str]) -> None:
+        if filepath is None:
+            self._result_file_value.configure(text=self._t("result_panel_none"))
+            self._result_output_value.configure(text=self._t("result_panel_none"))
+            self._result_metrics_value.configure(text=self._t("result_panel_none"))
+            self._result_warning_value.configure(text=self._t("result_panel_none"))
+            return
+
+        source_path = Path(filepath)
+        r = self._results_map.get(filepath)
+        classified_path = self._classified_outputs.get(filepath)
+        self._result_file_value.configure(text=f"{source_path.name}\n{source_path}")
+        self._result_output_value.configure(
+            text=str(classified_path) if classified_path is not None else self._t("result_panel_none")
+        )
+        if r is None:
+            self._result_metrics_value.configure(text=self._t("result_panel_unfitted_short"))
+            self._result_warning_value.configure(text=self._t("result_panel_none"))
+            return
+
+        self._result_metrics_value.configure(
+            text=self._t(
+                "result_panel_metrics",
+                n=r.n_states,
+                lp=f"{r.log_prob:.2f}",
+                m=", ".join(f"{m:.4f}" for m in r.state_means.tolist()),
+                sig=f"{r.state_sigma:.4f}",
+            )
+        )
+        if r.warnings:
+            self._result_warning_value.configure(
+                text="\n".join(f"- {w}" for w in r.warnings)
+            )
+        else:
+            self._result_warning_value.configure(text=self._t("result_panel_none"))
+
+    def _toggle_theme(self) -> None:
+        current = ctk.get_appearance_mode()
+        next_mode = "Light" if current == "Dark" else "Dark"
+        ctk.set_appearance_mode(next_mode)
+        # Yield focus to allow customtkinter to update, then update traditional tk widgets
+        self.root.after(100, self._update_component_colors)
+
+    def _set_theme(self, mode: str) -> None:
+        ctk.set_appearance_mode(mode)
+        self.root.after(100, self._update_component_colors)
+
+    def _update_component_colors(self) -> None:
+        mode = ctk.get_appearance_mode()
+        if mode == "Dark":
+            bg = "#2b2b2b"
+            fg = "#ffffff"
+            select_bg = "#1f538d"
+            select_fg = "#ffffff"
+            tree_bg = "#2b2b2b"
+            tree_fg = "#ffffff"
+            tree_field = "#2b2b2b"
+            tree_head_bg = "#242424"
+            text_bg = "#2b2b2b"
+            text_fg = "#ffffff"
+        else:
+            bg = "#ffffff"
+            fg = "#000000"
+            select_bg = "#BBDEFB"
+            select_fg = "#1565C0"
+            tree_bg = "#ffffff"
+            tree_fg = "#000000"
+            tree_field = "#ffffff"
+            tree_head_bg = "#e0e0e0"
+            text_bg = "#ffffff"
+            text_fg = "#000000"
+
+        # Apply listbox colors
+        self._file_listbox.config(
+            bg=bg, fg=fg,
+            selectbackground=select_bg,
+            selectforeground=select_fg,
+            highlightbackground="#565b5e" if mode == "Dark" else "#bdbdbd",
+            highlightcolor="#1f538d"
+        )
+        
+        # Apply Text log colors
+        self._log_text.config(
+            bg=text_bg, fg=text_fg,
+            insertbackground=fg,
+            highlightbackground="#565b5e" if mode == "Dark" else "#bdbdbd",
+            highlightcolor="#1f538d"
+        )
+
+        # Apply Treeview styles
+        style = ttk.Style(self.root)
+        style.theme_use("clam")
+        style.configure("Treeview", background=tree_bg, foreground=tree_fg, fieldbackground=tree_field, rowheight=28)
+        style.configure("Treeview.Heading", background=tree_head_bg, foreground=fg)
+        style.map("Treeview", background=[("selected", select_bg)], foreground=[("selected", select_fg)])
 
     def _switch_language(self, lang: str) -> None:
         from frethmm.app.i18n import set_language
@@ -573,36 +831,68 @@ class _App:
 
     def _refresh_all_text(self) -> None:
         self.root.title(self._t("app_title"))
-        self._subtitle_label.config(
+        self._subtitle_label.configure(
             text=f"  {self._t('subtitle')}  v{_VERSION}"
         )
 
-        self._file_frame.config(text=f" {self._t('section_files')} ")
-        self._btn_add.config(text=self._t("btn_add_files"))
-        self._btn_folder.config(text=self._t("btn_add_folder"))
-        self._btn_clear.config(text=self._t("btn_clear"))
-        self._btn_remove.config(text=self._t("btn_remove_selected"))
+        self._btn_add.configure(text=self._t("btn_add_files"))
+        self._btn_folder.configure(text=self._t("btn_add_folder"))
+        self._btn_clear.configure(text=self._t("btn_clear"))
+        self._btn_remove.configure(text=self._t("btn_remove_selected"))
 
-        self._param_frame.config(text=f" {self._t('section_params')} ")
-        self._lbl_states.config(text=self._t("label_states"))
-        self._lbl_guesses.config(text=self._t("label_guesses"))
-        self._lbl_iter.config(text=self._t("label_max_iter"))
-        self._lbl_tol.config(text=self._t("label_tolerance"))
-        self._lbl_workers.config(text=self._t("label_workers"))
-        self._lbl_mode.config(text=self._t("label_data_mode"))
-        self._lbl_signal_column.config(text=self._t("label_signal_column"))
+        self._btn_add_state_folder.configure(text=self._t("btn_add_state_folder"))
+        self._btn_remove_state_folder.configure(text=self._t("btn_remove_state_folder"))
+        self._btn_clear_state_folders.configure(text=self._t("btn_clear_state_folders"))
+        self._folder_tree.heading("folder", text=self._t("col_folder"))
+        self._folder_tree.heading("states", text=self._t("col_states"))
+        self._folder_tree.heading("mode", text=self._t("col_mode"))
+        self._folder_tree.heading("signal_column", text=self._t("col_signal_column"))
+        self._folder_tree.heading("files", text=self._t("col_files"))
 
-        self._out_frame.config(text=f" {self._t('section_output')} ")
-        self._btn_output.config(text=self._t("btn_output_folder"))
-        self._btn_output_reset.config(text=self._t("btn_output_reset"))
-        self._btn_export_classified.config(text=self._t("btn_export_classified"))
+        self._lbl_states.configure(text=self._t("label_states"))
+        self._lbl_guesses.configure(text=self._t("label_guesses"))
+        self._lbl_iter.configure(text=self._t("label_max_iter"))
+        self._lbl_tol.configure(text=self._t("label_tolerance"))
+        self._lbl_workers.configure(text=self._t("label_workers"))
+        self._lbl_mode.configure(text=self._t("label_data_mode"))
+        self._lbl_signal_column.configure(text=self._t("label_signal_column"))
+
+        self._btn_output.configure(text=self._t("btn_output_folder"))
+        self._btn_output_reset.configure(text=self._t("btn_output_reset"))
+        self._btn_export_classified.configure(text=self._t("btn_export_classified"))
         if not self.output_dir:
-            self._output_label.config(text=self._t("output_same_as_input"))
+            self._output_label.configure(text=self._t("output_same_as_input"))
 
-        self._run_btn.config(text=self._t("btn_run"))
-        self._cancel_btn.config(text=self._t("btn_cancel"))
+        self._run_btn.configure(text=self._t("btn_run"))
+        self._cancel_btn.configure(text=self._t("btn_cancel"))
+        self._result_summary_label.configure(text=self._t("section_runtime_panel"))
+        self._selection_title_label.configure(text=self._t("section_result_details"))
+        self._runtime_status_label.configure(text=self._t("runtime_status"))
+        self._runtime_progress_label.configure(text=self._t("runtime_progress"))
+        self._runtime_summary_label.configure(text=self._t("runtime_summary"))
+        self._runtime_output_label.configure(text=self._t("runtime_last_output"))
+        self._result_file_label.configure(text=self._t("result_file"))
+        self._result_output_label.configure(text=self._t("result_output"))
+        self._result_metrics_label.configure(text=self._t("result_metrics"))
+        self._result_warning_label.configure(text=self._t("result_warnings"))
+        self._runtime_status_value.configure(text=self._t(self._status_key, **self._status_kwargs))
+        self._runtime_progress_value.configure(text=self._progress_text)
+        self._runtime_summary_value.configure(
+            text=self._t(
+                "runtime_summary_value",
+                ok=self._result_stats["ok"],
+                warnings=self._result_stats["warnings"],
+                errors=self._result_stats["errors"],
+            )
+        )
+        self._runtime_output_value.configure(
+            text=self._last_output_path if self._last_output_path else self._t("result_panel_none")
+        )
+        if self._selected_result_path:
+            self._set_result_summary(self._selected_result_path)
+        else:
+            self._set_result_summary(None)
 
-        self._results_frame.config(text=f" {self._t('section_results')} ")
         self._tree.heading("file", text=self._t("col_file"))
         self._tree.heading("states", text=self._t("col_states"))
         self._tree.heading("log_prob", text=self._t("col_log_prob"))
@@ -610,9 +900,7 @@ class _App:
         self._tree.heading("sigma", text=self._t("col_sigma"))
         self._tree.heading("status", text=self._t("col_status"))
 
-        self._log_frame.config(text=f" {self._t('section_log')} ")
-
-        self._status_label.config(text=self._t(self._status_key, **self._status_kwargs))
+        self._status_label.configure(text=self._t(self._status_key, **self._status_kwargs))
 
         self._file_menu.entryconfig(0, label=self._t("menu_file_add"))
         self._file_menu.entryconfig(1, label=self._t("menu_file_add_folder"))
@@ -625,8 +913,15 @@ class _App:
         self._settings_menu.entryconfig(
             1, label=self._t("menu_settings_lang")
         )
+        self._settings_menu.entryconfig(
+            2, label=self._t("menu_settings_theme")
+        )
         self._lang_menu.entryconfig(0, label=self._t("menu_settings_lang_en"))
         self._lang_menu.entryconfig(1, label=self._t("menu_settings_lang_zh"))
+
+        self._theme_menu.entryconfig(0, label=self._t("menu_settings_theme_light"))
+        self._theme_menu.entryconfig(1, label=self._t("menu_settings_theme_dark"))
+        self._theme_menu.entryconfig(2, label=self._t("menu_settings_theme_system"))
 
         self._help_menu.entryconfig(0, label=self._t("menu_help_about"))
 
@@ -635,7 +930,7 @@ class _App:
         self._menubar.entryconfig(2, label=self._t("menu_help"))
 
     def _show_params_dialog(self) -> None:
-        dlg = tk.Toplevel(self.root)
+        dlg = ctk.CTkToplevel(self.root)
         dlg.title(self._t("dlg_params_title"))
         dlg.geometry("460x360")
         dlg.resizable(False, False)
@@ -648,67 +943,67 @@ class _App:
         y = (sh - 360) // 2
         dlg.geometry(f"460x360+{x}+{y}")
 
-        frame = ttk.Frame(dlg, padding=20)
-        frame.pack(fill=tk.BOTH, expand=True)
+        frame = ctk.CTkFrame(dlg, corner_radius=0, fg_color="transparent")
+        frame.pack(fill=tk.BOTH, expand=True, padding=20)
 
-        ttk.Label(frame, text=self._t("label_states")).grid(
+        # Grid system
+        ctk.CTkLabel(frame, text=self._t("label_states")).grid(
             row=0, column=0, sticky=tk.W, pady=6
         )
         states_var = tk.IntVar(value=self._states_var.get())
-        ttk.Spinbox(
-            frame, from_=1, to=30, textvariable=states_var, width=8
-        ).grid(row=0, column=1, padx=(10, 0), pady=6)
+        ctk.CTkEntry(
+            frame, textvariable=states_var, width=80
+        ).grid(row=0, column=1, padx=(10, 0), pady=6, sticky=tk.W)
 
-        ttk.Label(frame, text=self._t("label_max_iter")).grid(
+        ctk.CTkLabel(frame, text=self._t("label_max_iter")).grid(
             row=1, column=0, sticky=tk.W, pady=6
         )
         iter_var = tk.IntVar(value=self._iter_var.get())
-        ttk.Spinbox(
-            frame, from_=10, to=100000, textvariable=iter_var, width=8
-        ).grid(row=1, column=1, padx=(10, 0), pady=6)
+        ctk.CTkEntry(
+            frame, textvariable=iter_var, width=80
+        ).grid(row=1, column=1, padx=(10, 0), pady=6, sticky=tk.W)
 
-        ttk.Label(frame, text=self._t("label_tolerance")).grid(
+        ctk.CTkLabel(frame, text=self._t("label_tolerance")).grid(
             row=2, column=0, sticky=tk.W, pady=6
         )
         tol_var = tk.StringVar(value=self._tol_var.get())
-        ttk.Entry(frame, textvariable=tol_var, width=10).grid(
-            row=2, column=1, padx=(10, 0), pady=6
+        ctk.CTkEntry(frame, textvariable=tol_var, width=100).grid(
+            row=2, column=1, padx=(10, 0), pady=6, sticky=tk.W
         )
 
-        ttk.Label(frame, text=self._t("label_workers")).grid(
+        ctk.CTkLabel(frame, text=self._t("label_workers")).grid(
             row=3, column=0, sticky=tk.W, pady=6
         )
         workers_var = tk.IntVar(value=self._workers_var.get())
-        ttk.Spinbox(
-            frame, from_=1, to=32, textvariable=workers_var, width=8
-        ).grid(row=3, column=1, padx=(10, 0), pady=6)
+        ctk.CTkEntry(
+            frame, textvariable=workers_var, width=80
+        ).grid(row=3, column=1, padx=(10, 0), pady=6, sticky=tk.W)
 
-        ttk.Label(frame, text=self._t("label_data_mode")).grid(
+        ctk.CTkLabel(frame, text=self._t("label_data_mode")).grid(
             row=4, column=0, sticky=tk.W, pady=6
         )
         mode_var = tk.StringVar(value=self._mode_var.get())
-        ttk.Combobox(
+        ctk.CTkComboBox(
             frame,
-            textvariable=mode_var,
-            width=16,
+            variable=mode_var,
+            width=140,
             values=["auto", "paired_channel", "single_channel"],
-            state="readonly",
-        ).grid(row=4, column=1, padx=(10, 0), pady=6)
+        ).grid(row=4, column=1, padx=(10, 0), pady=6, sticky=tk.W)
 
-        ttk.Label(frame, text=self._t("label_signal_column")).grid(
+        ctk.CTkLabel(frame, text=self._t("label_signal_column")).grid(
             row=5, column=0, sticky=tk.W, pady=6
         )
         signal_column_var = tk.IntVar(value=self._signal_column_var.get())
-        ttk.Spinbox(
-            frame, from_=1, to=32, textvariable=signal_column_var, width=8
-        ).grid(row=5, column=1, padx=(10, 0), pady=6)
+        ctk.CTkEntry(frame, textvariable=signal_column_var, width=80).grid(
+            row=5, column=1, padx=(10, 0), pady=6, sticky=tk.W
+        )
 
-        ttk.Label(frame, text=self._t("label_guesses")).grid(
+        ctk.CTkLabel(frame, text=self._t("label_guesses")).grid(
             row=6, column=0, sticky=tk.W, pady=6
         )
         guesses_var = tk.StringVar(value=self._guesses_var.get())
-        ttk.Entry(frame, textvariable=guesses_var, width=28).grid(
-            row=6, column=1, padx=(10, 0), pady=6
+        ctk.CTkEntry(frame, textvariable=guesses_var, width=220).grid(
+            row=6, column=1, padx=(10, 0), pady=6, sticky=tk.W
         )
 
         def apply():
@@ -722,13 +1017,13 @@ class _App:
             self._update_mode_controls()
             dlg.destroy()
 
-        btn_frame = ttk.Frame(frame)
+        btn_frame = ctk.CTkFrame(frame, fg_color="transparent")
         btn_frame.grid(row=7, column=0, columnspan=2, pady=(16, 0))
-        ttk.Button(btn_frame, text="OK", command=apply, width=12).pack(
+        ctk.CTkButton(btn_frame, text="OK", command=apply, width=90).pack(
             side=tk.LEFT, padx=6
         )
-        ttk.Button(
-            btn_frame, text="Cancel", command=dlg.destroy, width=12
+        ctk.CTkButton(
+            btn_frame, text="Cancel", command=dlg.destroy, width=90, fg_color="grey"
         ).pack(side=tk.LEFT, padx=6)
 
     def _show_about(self) -> None:
@@ -746,7 +1041,8 @@ class _App:
     def _set_status(self, key: str, **kwargs) -> None:
         self._status_key = key
         self._status_kwargs = kwargs
-        self._status_label.config(text=self._t(key, **kwargs))
+        self._status_label.configure(text=self._t(key, **kwargs))
+        self._runtime_status_value.configure(text=self._t(key, **kwargs))
 
     def _add_files(self) -> None:
         files = filedialog.askopenfilenames(
@@ -761,7 +1057,7 @@ class _App:
                 self.selected_files.append(f)
                 self._file_listbox.insert(tk.END, f)
         if files:
-            self._set_status("status_files_selected", n=len(self.selected_files))
+            self._refresh_input_status()
 
     def _add_folder(self) -> None:
         d = filedialog.askdirectory(
@@ -780,12 +1076,12 @@ class _App:
         if not found:
             self._log(self._t("msg_no_traces"), "warning")
         else:
-            self._set_status("status_files_selected", n=len(self.selected_files))
+            self._refresh_input_status()
 
     def _clear_files(self) -> None:
         self.selected_files.clear()
         self._file_listbox.delete(0, tk.END)
-        self._set_status("status_ready")
+        self._refresh_input_status()
 
     def _delete_selected_files(self, _event: tk.Event = None) -> None:
         selected = self._file_listbox.curselection()
@@ -801,8 +1097,99 @@ class _App:
                 self.selected_files.remove(p)
             except ValueError:
                 pass
-        if self.selected_files:
-            self._set_status("status_files_selected", n=len(self.selected_files))
+        self._refresh_input_status()
+
+    def _add_state_folder_job(self) -> None:
+        folder = filedialog.askdirectory(title=self._t("folder_dialog_title"))
+        if not folder:
+            return
+
+        states = simpledialog.askinteger(
+            self._t("dlg_folder_states_title"),
+            self._t("dlg_folder_states_prompt"),
+            parent=self.root,
+            minvalue=1,
+            initialvalue=self._states_var.get(),
+        )
+        if states is None:
+            return
+
+        from frethmm.core.io import find_trace_files
+
+        folder_path = Path(folder)
+        found = find_trace_files(folder_path)
+        if not found:
+            self._log(self._t("msg_no_traces"), "warning")
+            return
+
+        try:
+            tol = self._parse_tol(self._tol_var.get())
+            signal_column = self._signal_column_var.get()
+            self._validate_signal_column(signal_column)
+        except ValueError as e:
+            messagebox.showerror(self._t("msg_invalid_params"), str(e))
+            return
+
+        for job in self.folder_jobs:
+            if Path(job.folder) == folder_path:
+                messagebox.showwarning(
+                    self._t("msg_invalid_params"),
+                    self._t("msg_folder_job_exists", path=str(folder_path)),
+                )
+                return
+
+        job = _FolderBatchJob(
+            folder=str(folder_path),
+            n_states=states,
+            max_iter=self._iter_var.get(),
+            tol=tol,
+            workers=self._workers_var.get(),
+            data_mode=self._mode_var.get(),
+            signal_column=signal_column,
+            guesses_text=self._guesses_var.get().strip(),
+        )
+        self.folder_jobs.append(job)
+        self._folder_tree.insert(
+            "",
+            tk.END,
+            iid=str(folder_path),
+            values=(
+                folder_path.name,
+                job.n_states,
+                job.data_mode,
+                job.signal_column,
+                len(found),
+            ),
+        )
+        self._refresh_input_status()
+
+    def _remove_selected_folder_jobs(self) -> None:
+        selected = self._folder_tree.selection()
+        if not selected:
+            return
+        selected_set = {str(item) for item in selected}
+        self.folder_jobs = [
+            job for job in self.folder_jobs if job.folder not in selected_set
+        ]
+        for item in selected:
+            self._folder_tree.delete(item)
+        self._refresh_input_status()
+
+    def _clear_folder_jobs(self) -> None:
+        self.folder_jobs.clear()
+        for item in self._folder_tree.get_children():
+            self._folder_tree.delete(item)
+        self._refresh_input_status()
+
+    def _refresh_input_status(self) -> None:
+        file_count = len(self.selected_files)
+        folder_count = len(self.folder_jobs)
+        if file_count or folder_count:
+            self._set_status(
+                "status_inputs_selected",
+                files=file_count,
+                folders=folder_count,
+            )
         else:
             self._set_status("status_ready")
 
@@ -812,21 +1199,18 @@ class _App:
         )
         if d:
             self.output_dir = d
-            self._output_label.config(text=d, foreground="#212121")
+            self._output_label.configure(text=d, text_color="#212121")
             self._set_status("status_output_selected", path=d)
 
     def _reset_output(self) -> None:
         self.output_dir = None
-        self._output_label.config(
+        self._output_label.configure(
             text=self._t("output_same_as_input"),
-            foreground="#757575",
+            text_color="#757575",
         )
-        if self.selected_files:
-            self._set_status("status_files_selected", n=len(self.selected_files))
-        else:
-            self._set_status("status_ready")
+        self._refresh_input_status()
 
-    def _on_mode_changed(self, _event: Optional[tk.Event] = None) -> None:
+    def _on_mode_changed(self, _event: Optional[Any] = None) -> None:
         self._update_mode_controls()
 
     def _classified_output_path(
@@ -873,36 +1257,37 @@ class _App:
     def _update_mode_controls(self) -> None:
         mode = self._mode_var.get()
         state = "normal" if mode in {"auto", "single_channel"} else "disabled"
-        self._signal_spinbox.config(state=state)
+        self._signal_entry.configure(state=state)
+
+    def _parse_guesses(self, guesses_text: str, n_states: int) -> Optional[list[float]]:
+        guesses = None
+        if guesses_text.strip():
+            guesses = [float(g) for g in guesses_text.split(",")]
+        if guesses is not None and len(guesses) != n_states:
+            raise ValueError(self._t("msg_guess_mismatch", g=len(guesses), s=n_states))
+        return guesses
+
+    def _parse_tol(self, tol_text: str) -> float:
+        try:
+            return float(tol_text.strip())
+        except ValueError:
+            raise ValueError(self._t("msg_invalid_tol", v=tol_text.strip()))
+
+    def _validate_signal_column(self, signal_column: int) -> None:
+        if signal_column < 1:
+            raise ValueError(self._t("msg_invalid_signal_column", v=signal_column))
 
     def _build_config(self):
         from frethmm.domain.models import ClassificationConfig
 
-        guesses = None
         g_str = self._guesses_var.get().strip()
-        if g_str:
-            guesses = [float(g) for g in g_str.split(",")]
-
         tol_str = self._tol_var.get().strip()
-        try:
-            tol = float(tol_str)
-        except ValueError:
-            raise ValueError(self._t("msg_invalid_tol", v=tol_str))
+        tol = self._parse_tol(tol_str)
 
         signal_column = self._signal_column_var.get()
-        if signal_column < 1:
-            raise ValueError(
-                self._t("msg_invalid_signal_column", v=signal_column)
-            )
-
+        self._validate_signal_column(signal_column)
         n_states = self._states_var.get()
-
-        if guesses is not None and len(guesses) != n_states:
-            raise ValueError(
-                self._t(
-                    "msg_guess_mismatch", g=len(guesses), s=n_states
-                )
-            )
+        guesses = self._parse_guesses(g_str, n_states)
 
         return ClassificationConfig(
             n_states=n_states,
@@ -914,37 +1299,104 @@ class _App:
             signal_column=signal_column,
         )
 
+    def _build_folder_job_config(self, job: _FolderBatchJob):
+        from frethmm.domain.models import ClassificationConfig
+
+        self._validate_signal_column(job.signal_column)
+        guesses = self._parse_guesses(job.guesses_text, job.n_states)
+        return ClassificationConfig(
+            n_states=job.n_states,
+            max_iter=job.max_iter,
+            tol=job.tol,
+            guesses=guesses,
+            workers=job.workers,
+            data_mode=job.data_mode,
+            signal_column=job.signal_column,
+        )
+
+    def _build_tasks(self) -> list[dict[str, Any]]:
+        import pickle
+
+        tasks: list[dict[str, Any]] = []
+        if self.selected_files:
+            config = self._build_config()
+            config_bytes = pickle.dumps(config)
+            for path in self.selected_files:
+                tasks.append(
+                    {
+                        "filepath": str(Path(path)),
+                        "config_bytes": config_bytes,
+                        "output_dir": self.output_dir,
+                    }
+                )
+
+        if self.folder_jobs:
+            from frethmm.core.io import find_trace_files
+
+            for job in self.folder_jobs:
+                config = self._build_folder_job_config(job)
+                config_bytes = pickle.dumps(config)
+                folder_path = Path(job.folder)
+                files = find_trace_files(folder_path)
+                if not files:
+                    self._log(
+                        self._t("msg_folder_job_empty", path=str(folder_path)),
+                        "warning",
+                    )
+                    continue
+                job_output_dir = None
+                if self.output_dir:
+                    job_output_dir = str(Path(self.output_dir) / folder_path.name)
+                for path in files:
+                    tasks.append(
+                        {
+                            "filepath": str(path),
+                            "config_bytes": config_bytes,
+                            "output_dir": job_output_dir,
+                        }
+                    )
+        return tasks
+
     def _set_ui_running(self, running: bool) -> None:
         if running:
-            self._run_btn.config(state=tk.DISABLED)
-            self._cancel_btn.config(state=tk.NORMAL)
+            self._run_btn.configure(state="disabled")
+            self._cancel_btn.configure(state="normal")
             self._set_status("status_running")
         else:
-            self._run_btn.config(state=tk.NORMAL)
-            self._cancel_btn.config(state=tk.DISABLED)
-            self._progress_bar["value"] = 0
-            self._progress_label.config(text="")
+            self._run_btn.configure(state="normal")
+            self._cancel_btn.configure(state="disabled")
+            self._progress_bar.set(0)
+            self._progress_label.configure(text="")
+            self._progress_text = "0/0"
+            self._runtime_progress_value.configure(text=self._progress_text)
 
     def _run(self) -> None:
-        if not self.selected_files:
+        if not self.selected_files and not self.folder_jobs:
             messagebox.showwarning(
                 self._t("msg_no_files_title"), self._t("msg_no_files")
             )
             return
 
         try:
-            config = self._build_config()
+            tasks = self._build_tasks()
         except ValueError as e:
             messagebox.showerror(self._t("msg_invalid_params"), str(e))
             return
-
-        import pickle
-
-        output_dir = Path(self.output_dir) if self.output_dir else None
-        files = [Path(p) for p in self.selected_files]
-        config_bytes = pickle.dumps(config)
+        if not tasks:
+            messagebox.showwarning(
+                self._t("msg_no_files_title"), self._t("msg_no_files")
+            )
+            return
         self._result_stats = {"ok": 0, "warnings": 0, "errors": 0}
         self._classified_outputs = {}
+        self._results_map = {}
+        self._selected_result_path = None
+        self._last_output_path = None
+        self._runtime_summary_value.configure(
+            text=self._t("runtime_summary_value", ok=0, warnings=0, errors=0)
+        )
+        self._runtime_output_value.configure(text=self._t("result_panel_none"))
+        self._set_result_summary(None)
 
         for item in self._tree.get_children():
             self._tree.delete(item)
@@ -955,7 +1407,10 @@ class _App:
 
         self._log(
             self._t(
-                "log_starting", n=len(files), s=config.n_states
+                "log_starting_mixed",
+                n=len(tasks),
+                files=len(self.selected_files),
+                folders=len(self.folder_jobs),
             ),
             "header",
         )
@@ -963,9 +1418,7 @@ class _App:
         self._worker_thread = threading.Thread(
             target=_worker,
             args=(
-                files,
-                config_bytes,
-                output_dir,
+                tasks,
                 self._cancel_event,
                 self._result_queue,
             ),
@@ -1010,9 +1463,11 @@ class _App:
             info: dict = msg.payload
             current = info["current"]
             total = info["total"]
-            pct = int(current / total * 100)
-            self._progress_bar["value"] = pct
-            self._progress_label.config(text=f"{current}/{total}")
+            pct = current / total
+            self._progress_bar.set(pct)
+            self._progress_label.configure(text=f"{current}/{total}")
+            self._progress_text = f"{current}/{total}"
+            self._runtime_progress_value.configure(text=self._progress_text)
 
         elif msg.type == _RESULT:
             info: dict = msg.payload
@@ -1051,6 +1506,22 @@ class _App:
                     source_path,
                     result_output_dir,
                 )
+                self._last_output_path = str(
+                    self._classified_outputs[str(source_path)]
+                )
+                
+                # Store results for the right-side summary panel
+                self._results_map[str(source_path)] = r
+                self._runtime_summary_value.configure(
+                    text=self._t(
+                        "runtime_summary_value",
+                        ok=self._result_stats["ok"],
+                        warnings=self._result_stats["warnings"],
+                        errors=self._result_stats["errors"],
+                    )
+                )
+                self._runtime_output_value.configure(text=self._last_output_path)
+                
                 self._tree.insert(
                     "",
                     tk.END,
@@ -1065,6 +1536,14 @@ class _App:
                     ),
                     tags=(tag,),
                 )
+                self._tree.selection_set(str(source_path))
+                self._tree.focus(str(source_path))
+                self._selected_result_path = str(source_path)
+                self._set_result_summary(str(source_path))
+                self._log(
+                    self._t("log_output_written", path=self._last_output_path),
+                    "success",
+                )
 
         elif msg.type == _DONE:
             self._log(self._t("log_complete"), "success")
@@ -1072,23 +1551,46 @@ class _App:
                 self._t("log_complete_summary", **self._result_stats),
                 "header",
             )
+            self._runtime_summary_value.configure(
+                text=self._t(
+                    "runtime_summary_value",
+                    ok=self._result_stats["ok"],
+                    warnings=self._result_stats["warnings"],
+                    errors=self._result_stats["errors"],
+                )
+            )
             self._set_ui_running(False)
             self._set_status("status_complete")
             self._worker_thread = None
             if self._after_id is not None:
                 self.root.after_cancel(self._after_id)
                 self._after_id = None
+            if self._result_stats["ok"] > 0:
+                messagebox.showinfo(
+                    self._t("msg_run_complete_title"),
+                    self._t(
+                        "msg_run_complete",
+                        ok=self._result_stats["ok"],
+                        warnings=self._result_stats["warnings"],
+                        errors=self._result_stats["errors"],
+                        path=self._last_output_path or self._t("result_panel_none"),
+                    ),
+                )
 
         elif msg.type == _ERROR:
             self._log(self._t("log_error", e=msg.payload), "error")
 
 
 def run_gui() -> None:
-    root = tk.Tk()
+    # Use CustomTkinter theme settings
+    ctk.set_appearance_mode("Light")
+    ctk.set_default_color_theme("blue")
+    
+    root = ctk.CTk()
     root.title("FretHMM — Single-Molecule State Classification")
-    root.minsize(750, 550)
+    root.minsize(950, 650)
 
-    w, h = 900, 720
+    w, h = 1150, 750
     sw = root.winfo_screenwidth()
     sh = root.winfo_screenheight()
     x = (sw - w) // 2
@@ -1096,7 +1598,6 @@ def run_gui() -> None:
     root.geometry(f"{w}x{h}+{x}+{y}")
 
     fonts = _detect_fonts()
-    _configure_styles(root, fonts)
 
     app = _App(root, fonts)
     app.build()

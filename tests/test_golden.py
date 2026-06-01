@@ -155,3 +155,38 @@ def test_cli_run_values2_single_channel_column_selection(tmp_path):
 
     assert classified_hash == expected["classified_sha256"]
     assert summary_hash == expected["summary_sha256"]
+
+
+@pytest.mark.skipif(not VALUES1_CSV.exists(), reason="Values1 sample data not found")
+def test_cli_run_classified_only_writes_only_primary_csv(tmp_path):
+    cmd = [
+        sys.executable,
+        "-m",
+        "frethmm.app.cli",
+        "run",
+        "--files",
+        str(VALUES1_CSV),
+        "--states",
+        "2",
+        "--mode",
+        "single_channel",
+        "--classified-only",
+        "--output-dir",
+        str(tmp_path),
+    ]
+
+    completed = subprocess.run(
+        cmd,
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "Values1_classified.csv" in completed.stdout
+    assert "Values1_summary.json" not in completed.stdout
+    assert (tmp_path / "Values1_classified.csv").exists()
+    assert not (tmp_path / "Values1_summary.json").exists()
+    assert not (tmp_path / "Values1report.dat").exists()
+    assert not (tmp_path / "Values1path.dat").exists()
+    assert not (tmp_path / "Values1dwell.dat").exists()

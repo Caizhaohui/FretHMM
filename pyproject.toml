@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "frethmm"
-version = "0.3.0"
+version = "0.4.0"
 description = "FretHMM: Hidden Markov Model state classification for single-molecule trajectories"
 requires-python = ">=3.10"
 dependencies = [
@@ -12,6 +12,7 @@ dependencies = [
     "scipy>=1.10",
     "hmmlearn>=0.3.0",
     "matplotlib>=3.7",
+    "customtkinter>=5.2.0",
 ]
 
 [project.optional-dependencies]

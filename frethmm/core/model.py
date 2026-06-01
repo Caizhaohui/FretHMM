@@ -124,12 +124,14 @@ def process_trace_file(
     filepath: Path,
     config: ClassificationConfig,
     output_dir: Optional[Path] = None,
+    classified_only: bool = False,
 ) -> ClassificationResult:
     trace = read_signal_trace(filepath, mode=config.data_mode, signal_column=config.signal_column)
     result = fit_signal_hmm(trace, config)
     write_classified_csv(trace, result, output_dir)
-    write_summary_json(result, output_dir)
-    write_state_report(result, output_dir)
-    write_state_path(trace, result, output_dir)
-    write_dwell_report(result, output_dir)
+    if not classified_only:
+        write_summary_json(result, output_dir)
+        write_state_report(result, output_dir)
+        write_state_path(trace, result, output_dir)
+        write_dwell_report(result, output_dir)
     return result

@@ -30,6 +30,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=1,
         help="1-based signal column index after Time for single_channel mode (default: 1)",
     )
+    run.add_argument(
+        "--classified-only",
+        action="store_true",
+        help="Write only *_classified.csv and skip summary/report/path/dwell outputs",
+    )
     run.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
     inp = run.add_mutually_exclusive_group(required=True)
     inp.add_argument("--input-dir", type=str, help="Directory of trace files")
@@ -63,9 +68,19 @@ def cmd_run(args: argparse.Namespace) -> None:
     )
     output_dir = Path(args.output_dir) if args.output_dir else None
     results = (
-        process_batch(Path(args.input_dir), config, output_dir)
+        process_batch(
+            Path(args.input_dir),
+            config,
+            output_dir,
+            classified_only=args.classified_only,
+        )
         if args.input_dir
-        else process_files([Path(path) for path in args.files], config, output_dir)
+        else process_files(
+            [Path(path) for path in args.files],
+            config,
+            output_dir,
+            classified_only=args.classified_only,
+        )
     )
     print(f"\nDone. Processed {len(results)} file(s).")
     for result in results:
@@ -74,7 +89,10 @@ def cmd_run(args: argparse.Namespace) -> None:
             f"  {result.filepath.name}: {result.n_states} states, "
             f"log_prob={result.log_prob:.2f}, means={result.state_means}"
         )
-        print(f"    outputs: {stem}_classified.csv, {stem}_summary.json")
+        if args.classified_only:
+            print(f"    outputs: {stem}_classified.csv")
+        else:
+            print(f"    outputs: {stem}_classified.csv, {stem}_summary.json")
         for warning in result.warnings:
             print(f"    WARNING: {warning}")
 

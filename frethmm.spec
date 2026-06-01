@@ -1,25 +1,45 @@
-# -*- mode: python ; coding: utf-8 -*-
-
+import customtkinter
+import os
+import sys
 from PyInstaller.utils.hooks import collect_submodules
 
+sys.path.insert(0, os.path.abspath("."))
 
 frethmm_hidden = collect_submodules("frethmm")
 
 a = Analysis(
     ["frethmm\\app\\gui.py"],
-    pathex=[],
+    pathex=[os.path.abspath(".")],
     binaries=[],
-    datas=[],
+    datas=[
+        (os.path.join(os.path.dirname(customtkinter.__file__), "assets"), "customtkinter/assets"),
+        ("frethmm", "frethmm")
+    ],
     hiddenimports=[
         "hmmlearn",
         "sklearn",
         "sklearn.utils._cython_blas",
-        "sklearn.neighbors._typedefs",
+        "customtkinter",
+        "frethmm",
+        "frethmm.app",
+        "frethmm.app.gui",
+        "frethmm.app.i18n",
+        "frethmm.core",
+        "frethmm.core.io",
+        "frethmm.core.model",
+        "frethmm.core.batch",
+        "frethmm.core.postprocess",
+        "frethmm.domain",
+        "frethmm.domain.models",
+        "frethmm.formats",
+        "frethmm.formats.report_parser",
+        "frethmm.viz",
+        "frethmm.viz.tdp",
     ] + frethmm_hidden,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["matplotlib", "tkinter.test", "unittest", "pydoc"],
+    excludes=["tkinter.test", "unittest", "pydoc"],
     noarchive=False,
     optimize=0,
 )

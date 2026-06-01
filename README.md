@@ -10,7 +10,7 @@
 | 数据模式 | 自动检测 / 单通道信号 / 双通道 Donor-Acceptor |
 | 批量处理 | 多文件并行（`ProcessPoolExecutor`），支持目录扫描 |
 | CLI | `run`、`tdp`、`gui` 三个子命令 |
-| GUI | tkinter 界面，中英文切换，后台线程分析 |
+| GUI | CustomTkinter 界面，深色/浅色主题，中英文切换，后台线程分析 |
 | 输出格式 | `*_classified.csv`、`*_summary.json`、`*report.dat`、`*path.dat`、`*dwell.dat` |
 | TDP | 转换密度图（Transition Density Plot）可视化 |
 | 打包 | PyInstaller 一键构建 Windows 可执行文件 |
@@ -30,6 +30,7 @@ pip install -e .
 - SciPy >= 1.10
 - hmmlearn >= 0.3.0
 - matplotlib >= 3.7（TDP 可视化需要）
+- customtkinter >= 5.2.0（GUI 需要）
 
 **可选依赖：**
 
@@ -62,6 +63,9 @@ frethmm run --files data.csv --states 2 --guesses "0.3,0.7"
 # 指定单通道模式及信号列
 frethmm run --files data.csv --states 2 --mode single_channel --signal-column 1
 
+# 只输出主结果 classified.csv
+frethmm run --files data.csv --states 2 --classified-only
+
 # 详细输出模式（显示所有警告信息）
 frethmm run --files data.csv --states 3 -v
 ```
@@ -80,6 +84,7 @@ frethmm run --files data.csv --states 3 -v
 | `--workers` | 1 | 并行工作进程数（>1 时启用多进程批处理） |
 | `--mode` | auto | 数据模式：`auto`（自动检测）/ `paired_channel`（双通道）/ `single_channel`（单通道） |
 | `--signal-column` | 1 | 单通道模式下选择的信号列索引（1-based，第 1 列为 Time 之后的列） |
+| `--classified-only` | 关闭 | 仅输出 `*_classified.csv`，不写出 `summary/report/path/dwell` |
 | `-v` / `--verbose` | 关闭 | 详细输出模式，显示所有警告 |
 
 **批量处理说明：**
@@ -124,10 +129,13 @@ frethmm gui
 
 - **菜单栏**：
   - **文件 (File)**：添加文件、添加文件夹、清除所有、退出
-  - **设置 (Settings)**：HMM 参数设置对话框、语言切换（English / 中文）
+  - **设置 (Settings)**：HMM 参数设置对话框、语言切换（English / 中文）、界面风格（明亮 / 暗黑 / 跟随系统）
   - **帮助 (Help)**：关于对话框
 - **文件选择**：通过按钮或菜单选择 `.csv` / `.dat` 轨迹文件，或指定输入目录批量处理
+- **状态文件夹批处理**：新增"按状态分组的文件夹批处理"面板，可同时添加多个文件夹并为每个文件夹指定不同的状态数
 - **参数面板**：状态数、初始猜测值、最大迭代次数、容差、并行数、数据模式、信号列
+- **运行面板**：实时显示分析状态、进度、运行汇总（成功/警告/错误计数）和最近输出路径
+- **结果详情**：选中结果表格中的文件后，右侧面板展示完整拟合指标和警告信息
 - **进度条**：实时显示分析任务完成进度
 - **结果表格**：分析完成后展示每个文件的拟合结果，颜色标识（绿色=成功，橙色=警告，红色=错误）
 - **日志面板**：彩色日志输出（蓝色标题、橙色警告、红色错误、绿色完成）
@@ -192,7 +200,7 @@ FretHMM/
 │   ├── __init__.py              # 版本信息
 │   ├── app/
 │   │   ├── cli.py               # CLI 入口（run / tdp / gui）
-│   │   ├── gui.py               # tkinter GUI
+│   │   ├── gui.py               # CustomTkinter GUI
 │   │   └── i18n.py              # 国际化（英文/中文）
 │   ├── core/
 │   │   ├── io.py                # 文件读写（轨迹读取 + 报告输出）
@@ -213,7 +221,7 @@ FretHMM/
 │   └── test_golden.py           # CLI 回归测试
 ├── docs/
 │   └── FretHMM-refactor-plan.md # 开发路线
-├── pyproject.toml               # 项目配置（v0.3.0）
+├── pyproject.toml               # 项目配置（v0.4.0）
 ├── build_exe.py                 # PyInstaller 打包脚本
 ├── frethmm.spec                 # PyInstaller 规格文件
 └── README.md
@@ -227,6 +235,19 @@ pytest tests/ -v
 ```
 
 ## 更新日志
+
+### v0.4.0 (2026-06-01)
+
+GUI 现代化重构与 CLI 功能增强：
+
+- **CustomTkinter 迁移**：GUI 从 tkinter/ttk 全面迁移到 CustomTkinter，支持明亮/暗黑/跟随系统三种界面风格
+- **`--classified-only` 参数**：CLI 新增 `--classified-only` 开关，仅输出 `*_classified.csv`，跳过 summary/report/path/dwell 辅助文件
+- **文件夹批处理面板**：GUI 新增"按状态分组的文件夹批处理"面板，可同时添加多个文件夹并为每个文件夹独立指定状态数、数据模式等参数
+- **运行面板与结果详情**：GUI 新增右侧运行面板，实时展示分析状态、进度、运行汇总；选中结果行后展示完整拟合指标和警告信息
+- **完成通知对话框**：分析完成后弹出汇总对话框，显示成功/警告/错误计数和最后输出路径
+- **i18n 扩展**：新增约 30 条翻译条目，覆盖主题切换、文件夹批处理、运行面板、结果详情等全部新功能
+- **测试**：新增 `test_cli_run_classified_only_writes_only_primary_csv` 回归测试
+- **依赖**：新增 `customtkinter>=5.2.0`
 
 ### v0.3.0 (2026-06-01)
 

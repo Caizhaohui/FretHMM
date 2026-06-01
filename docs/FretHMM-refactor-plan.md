@@ -56,7 +56,6 @@ Outcome:
 
 Tasks:
 
-- [ ] Update README title and project description from `pyHaMMy` to `FretHMM`
 - [ ] Add an explicit statement that the codebase is in active refactor from HaMMy-style tooling to a general single-molecule signal classification tool
 - [ ] Keep existing package/import path stable until a dedicated rename phase
 
