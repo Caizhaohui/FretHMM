@@ -13,7 +13,7 @@
 | GUI | CustomTkinter 界面，深色/浅色主题，中英文切换，后台线程分析 |
 | 输出格式 | `*_classified.csv`、`*_summary.json`、`*report.dat`、`*path.dat`、`*dwell.dat`（GUI 可勾选） |
 | TDP | 转换密度图（Transition Density Plot）可视化 |
-| 打包 | PyInstaller 一键构建 Windows 可执行文件 |
+| 打包 | PyInstaller 一键构建 Windows 可执行文件（支持目录模式 / `--onefile` 单文件模式） |
 
 ## 安装
 
@@ -133,9 +133,9 @@ frethmm gui
   - **帮助 (Help)**：关于对话框
 - **文件选择**：通过按钮或菜单选择 `.csv` / `.dat` 轨迹文件，或指定输入目录批量处理
 - **状态文件夹批处理**：新增"按状态分组的文件夹批处理"面板，可同时添加多个文件夹并为每个文件夹指定不同的状态数
-- **参数面板**：状态数、初始猜测值、最大迭代次数、容差、并行数、数据模式、信号列
+- **参数面板**：状态数、初始猜测值、最大迭代次数、容差、并行数、数据模式、信号列（与输出面板并排显示）
 - **输出选项**：GUI 新增输出文件勾选框，可自由选择输出 classified.csv / summary.json / report.dat / path.dat / dwell.dat
-- **运行面板**：实时显示分析状态、进度、运行汇总（成功/警告/错误计数）和最近输出路径
+- **运行面板**：可折叠的右侧运行面板（Show/Hide Runtime），实时显示分析状态、进度、运行汇总和最近输出路径
 - **结果详情**：选中结果表格中的文件后，右侧面板展示完整拟合指标和警告信息
 - **进度条**：实时显示分析任务完成进度
 - **结果表格**：分析完成后展示每个文件的拟合结果，颜色标识（绿色=成功，橙色=警告，红色=错误）
@@ -145,10 +145,14 @@ frethmm gui
 ### 打包为可执行文件
 
 ```bash
+# 目录模式（默认，生成 dist/FretHMM/ 目录）
 python build_exe.py
+
+# 单文件模式（生成 dist/FretHMM.exe，便于分发）
+python build_exe.py --onefile
 ```
 
-构建产物位于 `dist/FretHMM/`，生成独立的 Windows GUI 可执行文件，无需 Python 环境。
+构建产物为独立的 Windows GUI 可执行文件，无需 Python 环境。单文件模式体积较大但便于分发。
 
 ## 输入格式
 
@@ -203,6 +207,9 @@ FretHMM/
 │   │   ├── cli.py               # CLI 入口（run / tdp / gui）
 │   │   ├── gui.py               # CustomTkinter GUI
 │   │   └── i18n.py              # 国际化（英文/中文）
+│   ├── assets/
+│   │   ├── frethmm.ico          # 应用图标
+│   │   └── frethmm_logo.png     # 应用 Logo
 │   ├── core/
 │   │   ├── io.py                # 文件读写（轨迹读取 + 报告输出）
 │   │   ├── model.py             # HMM 引擎（Baum-Welch + Viterbi）
@@ -222,7 +229,7 @@ FretHMM/
 │   └── test_golden.py           # CLI 回归测试
 ├── docs/
 │   └── FretHMM-refactor-plan.md # 开发路线
-├── pyproject.toml               # 项目配置（v0.5.0）
+├── pyproject.toml               # 项目配置（v0.6.0）
 ├── build_exe.py                 # PyInstaller 打包脚本
 ├── frethmm.spec                 # PyInstaller 规格文件
 └── README.md
@@ -236,6 +243,18 @@ pytest tests/ -v
 ```
 
 ## 更新日志
+
+### v0.6.0 (2026-06-01)
+
+GUI 界面布局优化与打包瘦身：
+
+- **布局重构**：移除 ScrollableFrame，改用扁平布局；参数面板与输出面板并排显示，节省纵向空间
+- **可折叠运行面板**：右侧运行面板默认隐藏，通过 "Show/Hide Runtime" 按钮切换显示，最大化主工作区
+- **应用图标**：新增 `frethmm.ico` 和 `frethmm_logo.png` 资源文件，窗口标题栏和任务栏显示自定义图标
+- **窗口尺寸调整**：默认尺寸从 1150×750 增至 1280×720，最小尺寸 1180×660
+- **空态安全**：`_tree`、`_log_text` 等控件初始化为 `None`，所有访问前增加空检查，防止构建阶段异常
+- **PyInstaller 打包瘦身**：精简 spec 文件，使用 `collect_data_files` + `collect_dynamic_libs` 替代 `collect_all`；排除 PyQt5 / matplotlib / pandas / pytest / torch 等未使用的包，显著减小 EXE 体积
+- **`--onefile` 模式**：`build_exe.py` 新增 `--onefile` 参数，通过 `FRETHMM_ONEFILE` 环境变量控制生成单文件 EXE
 
 ### v0.5.0 (2026-06-01)
 

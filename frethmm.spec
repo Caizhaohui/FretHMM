@@ -1,25 +1,20 @@
 import customtkinter
 import os
 import sys
-from PyInstaller.utils.hooks import collect_all, collect_submodules, copy_metadata
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, copy_metadata
 
 sys.path.insert(0, os.path.abspath("."))
+ONEFILE = os.environ.get("FRETHMM_ONEFILE") == "1"
 
-frethmm_hidden = collect_submodules("frethmm")
-unittest_hidden = collect_submodules("unittest")
-
-
-def _collect_package(name):
-    datas, binaries, hiddenimports = collect_all(name)
-    return datas, binaries, hiddenimports
-
-
-customtkinter_datas, customtkinter_binaries, customtkinter_hidden = _collect_package("customtkinter")
-hmmlearn_datas, hmmlearn_binaries, hmmlearn_hidden = _collect_package("hmmlearn")
-sklearn_datas, sklearn_binaries, sklearn_hidden = _collect_package("sklearn")
-scipy_datas, scipy_binaries, scipy_hidden = _collect_package("scipy")
-numpy_datas, numpy_binaries, numpy_hidden = _collect_package("numpy")
-matplotlib_datas, matplotlib_binaries, matplotlib_hidden = _collect_package("matplotlib")
+customtkinter_datas = collect_data_files("customtkinter")
+hmmlearn_binaries = collect_dynamic_libs("hmmlearn")
+sklearn_binaries = collect_dynamic_libs("sklearn")
+scipy_binaries = collect_dynamic_libs("scipy")
+numpy_binaries = collect_dynamic_libs("numpy")
+app_asset_datas = [
+    ("frethmm/assets/frethmm_logo.png", "frethmm/assets"),
+    ("frethmm/assets/frethmm.ico", "frethmm/assets"),
+]
 
 metadata_datas = (
     copy_metadata("frethmm")
@@ -27,7 +22,6 @@ metadata_datas = (
     + copy_metadata("hmmlearn")
     + copy_metadata("scipy")
     + copy_metadata("numpy")
-    + copy_metadata("matplotlib")
     + copy_metadata("scikit-learn")
 )
 
@@ -35,55 +29,60 @@ a = Analysis(
     ["frethmm\\app\\gui.py"],
     pathex=[os.path.abspath(".")],
     binaries=(
-        customtkinter_binaries
-        + hmmlearn_binaries
+        hmmlearn_binaries
         + sklearn_binaries
         + scipy_binaries
         + numpy_binaries
-        + matplotlib_binaries
     ),
     datas=[
         (os.path.join(os.path.dirname(customtkinter.__file__), "assets"), "customtkinter/assets"),
-        ("frethmm", "frethmm"),
+        *app_asset_datas,
     ]
     + customtkinter_datas
-    + hmmlearn_datas
-    + sklearn_datas
-    + scipy_datas
-    + numpy_datas
-    + matplotlib_datas
     + metadata_datas,
     hiddenimports=[
         "customtkinter",
         "frethmm",
-        "frethmm.app",
-        "frethmm.app.cli",
         "frethmm.app.gui",
         "frethmm.app.i18n",
-        "frethmm.core",
         "frethmm.core.io",
         "frethmm.core.model",
-        "frethmm.core.batch",
         "frethmm.core.postprocess",
-        "frethmm.domain",
         "frethmm.domain.models",
-        "frethmm.formats",
-        "frethmm.formats.report_parser",
-        "frethmm.viz",
-        "frethmm.viz.tdp",
-    ]
-    + frethmm_hidden
-    + unittest_hidden
-    + customtkinter_hidden
-    + hmmlearn_hidden
-    + sklearn_hidden
-    + scipy_hidden
-    + numpy_hidden
-    + matplotlib_hidden,
+        "hmmlearn",
+        "hmmlearn.hmm",
+        "numpy",
+        "pydoc",
+        "scipy",
+        "scipy.linalg",
+        "scipy.special",
+        "sklearn",
+        "sklearn.base",
+        "sklearn.cluster",
+        "sklearn.mixture",
+        "sklearn.utils",
+        "sklearn.utils._cython_blas",
+        "sklearn.utils._heap",
+        "sklearn.utils._sorting",
+        "sklearn.utils._vector_sentinel",
+        "unittest",
+        "unittest.mock",
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["tkinter.test"],
+    excludes=[
+        "IPython",
+        "PyQt5",
+        "matplotlib",
+        "notebook",
+        "pandas",
+        "pytest",
+        "scipy.tests",
+        "sklearn.tests",
+        "tkinter.test",
+        "torch",
+    ],
     noarchive=False,
     optimize=0,
 )
@@ -93,9 +92,8 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
-    [],
+    a.binaries if ONEFILE else [],
+    a.datas if ONEFILE else [],
     name="FretHMM",
     debug=False,
     bootloader_ignore_signals=False,
@@ -107,13 +105,16 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon="frethmm\\assets\\frethmm.ico",
+    exclude_binaries=not ONEFILE,
 )
 
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.datas,
-    strip=False,
-    upx=False,
-    name="FretHMM",
-)
+if not ONEFILE:
+    coll = COLLECT(
+        exe,
+        a.binaries,
+        a.datas,
+        strip=False,
+        upx=False,
+        name="FretHMM",
+    )

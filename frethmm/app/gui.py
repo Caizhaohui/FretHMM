@@ -31,6 +31,8 @@ _DONE = "done"
 _ERROR = "error"
 _WARNING = "warning"
 
+_APP_ASSET_DIR = Path(__file__).resolve().parent.parent / "assets"
+
 
 def _debug_log_path() -> Path:
     if getattr(sys, "frozen", False):
@@ -47,6 +49,11 @@ def _append_debug_log(message: str) -> None:
             fh.write(message.rstrip() + "\n")
     except Exception:
         pass
+
+
+def _resource_path(relative: str) -> Path:
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2]))
+    return base / relative
 
 
 @dataclass
@@ -192,6 +199,8 @@ class _App:
         self._results_map: dict[str, Any] = {}
         self._selected_result_path: Optional[str] = None
         self._last_output_path: Optional[str] = None
+        self._tree: Optional[ttk.Treeview] = None
+        self._log_text: Optional[tk.Text] = None
         self._export_classified_var = tk.BooleanVar(value=True)
         self._export_summary_var = tk.BooleanVar(value=False)
         self._export_report_var = tk.BooleanVar(value=False)
@@ -209,21 +218,22 @@ class _App:
     def build(self) -> None:
         self._build_menu()
 
-        # Layout Split: Left (Scrollable Controls), Right (Result Summary)
-        main_layout = ctk.CTkFrame(self.root, fg_color="transparent")
-        main_layout.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        # Layout Split: Left (Flat Controls), Right (Hidden Runtime Summary)
+        self._main_layout = ctk.CTkFrame(self.root, fg_color="transparent")
+        self._main_layout.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        left_container = ctk.CTkFrame(main_layout, fg_color="transparent")
-        left_container.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
+        self._left_container = ctk.CTkFrame(self._main_layout, fg_color="transparent")
+        self._left_container.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=0)
 
-        left_scroll = ctk.CTkScrollableFrame(left_container, width=540, label_text="")
-        left_scroll.pack(fill=tk.BOTH, expand=True)
+        left_panel = ctk.CTkFrame(self._left_container, fg_color="transparent")
+        left_panel.pack(fill=tk.BOTH, expand=True)
 
-        right_frame = ctk.CTkFrame(main_layout, corner_radius=10)
-        right_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self._right_frame = ctk.CTkFrame(self._main_layout, corner_radius=10, width=220)
+        self._right_frame.pack_propagate(False)
+        self._runtime_panel_visible = False
 
         # Header Frame in left scroll
-        title_frame = ctk.CTkFrame(left_scroll, fg_color="transparent")
+        title_frame = ctk.CTkFrame(left_panel, fg_color="transparent")
         title_frame.pack(fill=tk.X, pady=(0, 10))
         self._title_label = ctk.CTkLabel(
             title_frame,
@@ -249,18 +259,32 @@ class _App:
             command=self._toggle_theme,
         )
         self._theme_btn.pack(side=tk.RIGHT)
+        self._runtime_toggle_btn = ctk.CTkButton(
+            title_frame,
+            text="Show Runtime",
+            width=100,
+            height=26,
+            command=self._toggle_runtime_panel,
+        )
+        self._runtime_toggle_btn.pack(side=tk.RIGHT, padx=(0, 8))
 
-        self._build_files_section(left_scroll)
-        self._build_folder_jobs_section(left_scroll)
-        self._build_params_section(left_scroll)
-        self._build_output_section(left_scroll)
-        self._build_action_section(left_scroll)
-        self._build_results_section(left_scroll)
-        self._build_log_section(left_scroll)
-        self._build_status_bar(left_scroll)
+        self._build_files_section(left_panel)
+        self._build_folder_jobs_section(left_panel)
+
+        params_output_row = ctk.CTkFrame(left_panel, fg_color="transparent")
+        params_output_row.pack(fill=tk.X, pady=(0, 8))
+        params_output_row.grid_columnconfigure(0, weight=1)
+        params_output_row.grid_columnconfigure(1, weight=1)
+
+        self._build_params_section(params_output_row, column=0, padx=(0, 4))
+        self._build_output_section(params_output_row, column=1, padx=(4, 0))
+
+        self._build_action_section(left_panel)
+        self._build_status_bar(left_panel)
         
         # Build Visualization Canvas
-        self._build_result_summary_panel(right_frame)
+        self._build_result_summary_panel(self._right_frame)
+        self._hide_runtime_panel()
         self._update_mode_controls()
 
         # Update styling colors for the first time
@@ -448,9 +472,15 @@ class _App:
         self._folder_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         folder_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
-    def _build_params_section(self, parent: ctk.CTkFrame) -> None:
+    def _build_params_section(
+        self,
+        parent: ctk.CTkFrame,
+        *,
+        column: int = 0,
+        padx: tuple[int, int] = (0, 0),
+    ) -> None:
         self._param_frame = ctk.CTkFrame(parent)
-        self._param_frame.pack(fill=tk.X, pady=(0, 8), padx=2)
+        self._param_frame.grid(row=0, column=column, sticky="nsew", padx=padx)
         
         lbl = ctk.CTkLabel(self._param_frame, text=self._t('section_params'), font=ctk.CTkFont(weight="bold"))
         lbl.pack(anchor=tk.W, padx=10, pady=5)
@@ -514,9 +544,15 @@ class _App:
         )
         self._signal_entry.pack(side=tk.LEFT, padx=(4, 0))
 
-    def _build_output_section(self, parent: ctk.CTkFrame) -> None:
+    def _build_output_section(
+        self,
+        parent: ctk.CTkFrame,
+        *,
+        column: int = 0,
+        padx: tuple[int, int] = (0, 0),
+    ) -> None:
         self._out_frame = ctk.CTkFrame(parent)
-        self._out_frame.pack(fill=tk.X, pady=(0, 8), padx=2)
+        self._out_frame.grid(row=0, column=column, sticky="nsew", padx=padx)
         
         lbl = ctk.CTkLabel(self._out_frame, text=self._t('section_output'), font=ctk.CTkFont(weight="bold"))
         lbl.pack(anchor=tk.W, padx=10, pady=5)
@@ -577,14 +613,14 @@ class _App:
         out_row = ctk.CTkFrame(self._out_frame, fg_color="transparent")
         out_row.pack(fill=tk.X, padx=10, pady=5)
         self._btn_output = ctk.CTkButton(
-            out_row, text=self._t("btn_output_folder"), command=self._select_output, width=120
+            out_row, text=self._t("btn_output_folder"), command=self._select_output, width=110
         )
         self._btn_output.pack(side=tk.LEFT, padx=(0, 8))
         self._btn_output_reset = ctk.CTkButton(
             out_row,
             text=self._t("btn_output_reset"),
             command=self._reset_output,
-            width=120,
+            width=110,
             fg_color="#757575"
         )
         self._btn_output_reset.pack(side=tk.LEFT, padx=(0, 8))
@@ -592,7 +628,7 @@ class _App:
             out_row,
             text=self._t("btn_export_classified"),
             command=self._export_selected_classified,
-            width=140
+            width=130
         )
         self._btn_export_classified.pack(side=tk.LEFT, padx=(0, 8))
         self._output_label = ctk.CTkLabel(
@@ -807,6 +843,8 @@ class _App:
         return label, value
 
     def _on_result_selected(self, _event: Optional[tk.Event] = None) -> None:
+        if self._tree is None:
+            return
         selected = self._tree.selection()
         if not selected:
             self._selected_result_path = None
@@ -897,13 +935,14 @@ class _App:
             highlightcolor="#1f538d"
         )
         
-        # Apply Text log colors
-        self._log_text.config(
-            bg=text_bg, fg=text_fg,
-            insertbackground=fg,
-            highlightbackground="#565b5e" if mode == "Dark" else "#bdbdbd",
-            highlightcolor="#1f538d"
-        )
+        # Apply Text log colors if the log view is enabled.
+        if self._log_text is not None:
+            self._log_text.config(
+                bg=text_bg, fg=text_fg,
+                insertbackground=fg,
+                highlightbackground="#565b5e" if mode == "Dark" else "#bdbdbd",
+                highlightcolor="#1f538d"
+            )
 
         # Apply Treeview styles
         style = ttk.Style(self.root)
@@ -968,10 +1007,6 @@ class _App:
         self._runtime_progress_label.configure(text=self._t("runtime_progress"))
         self._runtime_summary_label.configure(text=self._t("runtime_summary"))
         self._runtime_output_label.configure(text=self._t("runtime_last_output"))
-        self._result_file_label.configure(text=self._t("result_file"))
-        self._result_output_label.configure(text=self._t("result_output"))
-        self._result_metrics_label.configure(text=self._t("result_metrics"))
-        self._result_warning_label.configure(text=self._t("result_warnings"))
         self._runtime_status_value.configure(text=self._t(self._status_key, **self._status_kwargs))
         self._runtime_progress_value.configure(text=self._progress_text)
         self._runtime_summary_value.configure(
@@ -990,12 +1025,13 @@ class _App:
         else:
             self._set_result_summary(None)
 
-        self._tree.heading("file", text=self._t("col_file"))
-        self._tree.heading("states", text=self._t("col_states"))
-        self._tree.heading("log_prob", text=self._t("col_log_prob"))
-        self._tree.heading("means", text=self._t("col_means"))
-        self._tree.heading("sigma", text=self._t("col_sigma"))
-        self._tree.heading("status", text=self._t("col_status"))
+        if self._tree is not None:
+            self._tree.heading("file", text=self._t("col_file"))
+            self._tree.heading("states", text=self._t("col_states"))
+            self._tree.heading("log_prob", text=self._t("col_log_prob"))
+            self._tree.heading("means", text=self._t("col_means"))
+            self._tree.heading("sigma", text=self._t("col_sigma"))
+            self._tree.heading("status", text=self._t("col_status"))
 
         self._status_label.configure(text=self._t(self._status_key, **self._status_kwargs))
 
@@ -1129,8 +1165,35 @@ class _App:
             self._t("about_msg", v=_VERSION),
         )
 
+    def _show_runtime_panel(self) -> None:
+        if getattr(self, "_runtime_panel_visible", False):
+            return
+        self._right_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=(8, 0))
+        self._left_container.pack_configure(padx=(0, 8))
+        self._runtime_panel_visible = True
+        self._runtime_toggle_btn.configure(text="Hide Runtime")
+
+    def _hide_runtime_panel(self) -> None:
+        if not getattr(self, "_runtime_panel_visible", False):
+            self._right_frame.pack_forget()
+            self._left_container.pack_configure(padx=0)
+            self._runtime_toggle_btn.configure(text="Show Runtime")
+            return
+        self._right_frame.pack_forget()
+        self._left_container.pack_configure(padx=0)
+        self._runtime_panel_visible = False
+        self._runtime_toggle_btn.configure(text="Show Runtime")
+
+    def _toggle_runtime_panel(self) -> None:
+        if getattr(self, "_runtime_panel_visible", False):
+            self._hide_runtime_panel()
+        else:
+            self._show_runtime_panel()
+
     def _log(self, msg: str, tag: str = "normal") -> None:
         _append_debug_log(f"[{tag}] {msg}")
+        if self._log_text is None:
+            return
         self._log_text.config(state=tk.NORMAL)
         self._log_text.insert(tk.END, msg + "\n", tag)
         self._log_text.see(tk.END)
@@ -1320,15 +1383,23 @@ class _App:
         return base_dir / f"{source_path.stem}_classified.csv"
 
     def _export_selected_classified(self) -> None:
-        selected = self._tree.selection()
-        if not selected:
+        selected_path: Optional[str] = None
+        if self._tree is not None:
+            selected = self._tree.selection()
+            if selected:
+                selected_path = selected[0]
+
+        if selected_path is None:
+            selected_path = self._selected_result_path
+
+        if selected_path is None:
             messagebox.showwarning(
                 self._t("msg_no_result_selected_title"),
                 self._t("msg_no_result_selected"),
             )
             return
 
-        source_path = Path(selected[0])
+        source_path = Path(selected_path)
         classified_path = self._classified_outputs.get(str(source_path))
         if classified_path is None:
             classified_path = self._classified_output_path(source_path, self.output_dir)
@@ -1515,8 +1586,9 @@ class _App:
         self._runtime_output_value.configure(text=self._t("result_panel_none"))
         self._set_result_summary(None)
 
-        for item in self._tree.get_children():
-            self._tree.delete(item)
+        if self._tree is not None:
+            for item in self._tree.get_children():
+                self._tree.delete(item)
 
         self._set_ui_running(True)
         self._cancel_event.clear()
@@ -1602,16 +1674,17 @@ class _App:
 
             if error:
                 self._result_stats["errors"] += 1
-                self._tree.insert(
-                    "",
-                    tk.END,
-                    iid=str(source_path),
-                    values=(
-                        fname, "", "", "", "",
-                        f"Error: {error[:50]}",
-                    ),
-                    tags=("error",),
-                )
+                if self._tree is not None:
+                    self._tree.insert(
+                        "",
+                        tk.END,
+                        iid=str(source_path),
+                        values=(
+                            fname, "", "", "", "",
+                            f"Error: {error[:50]}",
+                        ),
+                        tags=("error",),
+                    )
             elif r is not None:
                 has_warnings = bool(r.warnings)
                 if has_warnings:
@@ -1644,25 +1717,25 @@ class _App:
                     )
                 )
                 self._runtime_output_value.configure(text=self._last_output_path)
-                
-                self._tree.insert(
-                    "",
-                    tk.END,
-                    iid=str(source_path),
-                    values=(
-                        fname,
-                        r.n_states,
-                        f"{r.log_prob:.2f}",
-                        means_str,
-                        f"{r.state_sigma:.4f}",
-                        status,
-                    ),
-                    tags=(tag,),
-                )
-                self._tree.selection_set(str(source_path))
-                self._tree.focus(str(source_path))
-                self._selected_result_path = str(source_path)
-                self._set_result_summary(str(source_path))
+                if self._tree is not None:
+                    self._tree.insert(
+                        "",
+                        tk.END,
+                        iid=str(source_path),
+                        values=(
+                            fname,
+                            r.n_states,
+                            f"{r.log_prob:.2f}",
+                            means_str,
+                            f"{r.state_sigma:.4f}",
+                            status,
+                        ),
+                        tags=(tag,),
+                    )
+                    self._tree.selection_set(str(source_path))
+                    self._tree.focus(str(source_path))
+                    self._selected_result_path = str(source_path)
+                    self._set_result_summary(str(source_path))
                 self._log(
                     self._t("log_output_written", path=self._last_output_path),
                     "success",
@@ -1727,10 +1800,21 @@ def run_gui() -> None:
     ctk.set_default_color_theme("blue")
 
     root = ctk.CTk()
+    try:
+        icon_ico = _resource_path("frethmm/assets/frethmm.ico")
+        if icon_ico.exists():
+            root.iconbitmap(default=str(icon_ico))
+        icon_path = _resource_path("frethmm/assets/frethmm_logo.png")
+        if icon_path.exists():
+            icon = tk.PhotoImage(file=str(icon_path))
+            root.iconphoto(True, icon)
+            root._frethmm_icon = icon
+    except Exception:
+        pass
     root.title("FretHMM — Single-Molecule State Classification")
-    root.minsize(950, 650)
+    root.minsize(1180, 660)
 
-    w, h = 1150, 750
+    w, h = 1280, 720
     sw = root.winfo_screenwidth()
     sh = root.winfo_screenheight()
     x = (sw - w) // 2
