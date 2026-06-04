@@ -9,8 +9,8 @@
 | HMM 引擎 | Baum-Welch 训练 + Viterbi 解码（基于 hmmlearn） |
 | 数据模式 | 自动检测 / 单通道信号 / 双通道 Donor-Acceptor |
 | 批量处理 | 多文件并行（`ProcessPoolExecutor`），支持目录扫描 |
-| CLI | `run`、`tdp`、`gui` 三个子命令 |
-| GUI | CustomTkinter 界面，深色/浅色主题，中英文切换，后台线程分析 |
+| CLI | `run`、`tdp`、`review-grid`、`gui` 四个子命令 |
+| GUI | CustomTkinter 界面，深色/浅色主题，中英文切换，后台线程分析，支持批量 review grid 导出 |
 | 输出格式 | `*_classified.csv`、`*_summary.json`、`*report.dat`、`*path.dat`、`*dwell.dat`（GUI 可勾选） |
 | TDP | 转换密度图（Transition Density Plot）可视化 |
 | 打包 | PyInstaller 一键构建 Windows 可执行文件（支持目录模式 / `--onefile` 单文件模式） |
@@ -255,6 +255,15 @@ GUI 界面布局优化与打包瘦身：
 - **空态安全**：`_tree`、`_log_text` 等控件初始化为 `None`，所有访问前增加空检查，防止构建阶段异常
 - **PyInstaller 打包瘦身**：精简 spec 文件，使用 `collect_data_files` + `collect_dynamic_libs` 替代 `collect_all`；排除 PyQt5 / matplotlib / pandas / pytest / torch 等未使用的包，显著减小 EXE 体积
 - **`--onefile` 模式**：`build_exe.py` 新增 `--onefile` 参数，通过 `FRETHMM_ONEFILE` 环境变量控制生成单文件 EXE
+
+### v1.0.0 (2026-06-04)
+
+面向人工审查的批量可视化发布版本：
+
+- **批量 review grid CLI**：新增 `review-grid` 子命令，可对目录中的单分子轨迹批量分类并导出分页拼图总览
+- **GUI/EXE review grid**：GUI 新增 `Batch Review Grid` 区块，支持从文件或文件夹直接生成分页审查图
+- **分页拼图布局**：支持自定义 `rows x cols`，适合 `2-state`、`3-state` 等批量样本的人眼快速筛查
+- **可视化审查增强**：每个子图叠加 raw signal 和 classified trace，并显示文件名、`log_prob`、`state means`
 
 ### v0.5.0 (2026-06-01)
 

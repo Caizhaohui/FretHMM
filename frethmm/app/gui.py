@@ -30,6 +30,7 @@ _RESULT = "result"
 _DONE = "done"
 _ERROR = "error"
 _WARNING = "warning"
+_REVIEW_DONE = "review_done"
 
 _APP_ASSET_DIR = Path(__file__).resolve().parent.parent / "assets"
 
@@ -154,6 +155,84 @@ def _worker(
     result_queue.put(_Msg(_DONE, None))
 
 
+def _review_worker(
+    tasks: list[dict[str, Any]],
+    output_name: str,
+    rows: int,
+    cols: int,
+    cancel_event: threading.Event,
+    result_queue: queue.Queue[_Msg],
+) -> None:
+    import pickle
+    import traceback
+
+    try:
+        from frethmm.core.model import process_trace_file
+        from frethmm.domain.models import ExportOptions
+        from frethmm.viz.review_grid import plot_review_grid
+    except Exception as exc:
+        _append_debug_log(f"Import error in review worker: {exc}\n{traceback.format_exc()}")
+        result_queue.put(_Msg(_ERROR, f"Import error: {exc}\n{traceback.format_exc()}"))
+        result_queue.put(_Msg(_DONE, None))
+        return
+
+    try:
+        export_options = ExportOptions.classified_only()
+        results = []
+        total = len(tasks)
+        first_output_dir = tasks[0].get("output_dir")
+        first_filepath = Path(tasks[0]["filepath"])
+        out_dir = Path(first_output_dir) if first_output_dir else first_filepath.parent
+
+        for i, task in enumerate(tasks):
+            if cancel_event.is_set():
+                result_queue.put(_Msg(_LOG, "status_cancelled"))
+                result_queue.put(_Msg(_DONE, None))
+                return
+            filepath = Path(task["filepath"])
+            config = pickle.loads(task["config_bytes"])
+            result_output_dir = (
+                Path(task["output_dir"])
+                if task.get("output_dir") is not None
+                else None
+            )
+            result_queue.put(_Msg(_LOG, f"[{i + 1}/{total}] {filepath.name}"))
+            result_queue.put(_Msg(_PROGRESS, {"current": i + 1, "total": total}))
+            result = process_trace_file(
+                filepath,
+                config,
+                result_output_dir,
+                export_options=export_options,
+            )
+            results.append(result)
+            for warning in result.warnings:
+                result_queue.put(_Msg(_WARNING, warning))
+
+        output_path = out_dir / output_name
+        image_paths = plot_review_grid(
+            results,
+            config,
+            output_path,
+            rows=rows,
+            cols=cols,
+        )
+        result_queue.put(
+            _Msg(
+                _REVIEW_DONE,
+                {
+                    "image_paths": [str(path) for path in image_paths],
+                    "count": len(results),
+                },
+            )
+        )
+    except Exception as exc:
+        tb = traceback.format_exc()
+        _append_debug_log(f"Review worker error: {exc}\n{tb}")
+        result_queue.put(_Msg(_ERROR, f"{exc}\n{tb}"))
+    finally:
+        result_queue.put(_Msg(_DONE, None))
+
+
 def _detect_fonts() -> dict[str, tuple[str, int, str]]:
     system = platform.system()
     if system == "Windows":
@@ -206,6 +285,10 @@ class _App:
         self._export_report_var = tk.BooleanVar(value=False)
         self._export_path_var = tk.BooleanVar(value=False)
         self._export_dwell_var = tk.BooleanVar(value=False)
+        self._review_rows_var = tk.IntVar(value=4)
+        self._review_cols_var = tk.IntVar(value=8)
+        self._review_output_var = tk.StringVar(value="review_grid.png")
+        self._review_image_paths: list[str] = []
 
     def _t(self, key: str, **kwargs) -> str:
         from frethmm.app.i18n import t, get_language
@@ -279,7 +362,13 @@ class _App:
         self._build_params_section(params_output_row, column=0, padx=(0, 4))
         self._build_output_section(params_output_row, column=1, padx=(4, 0))
 
-        self._build_action_section(left_panel)
+        action_review_row = ctk.CTkFrame(left_panel, fg_color="transparent")
+        action_review_row.pack(fill=tk.X, pady=(0, 8))
+        action_review_row.grid_columnconfigure(0, weight=1)
+        action_review_row.grid_columnconfigure(1, weight=1)
+
+        self._build_review_grid_section(action_review_row, column=0, padx=(0, 4))
+        self._build_action_section(action_review_row, column=1, padx=(4, 0))
         self._build_status_bar(left_panel)
         
         # Build Visualization Canvas
@@ -638,9 +727,15 @@ class _App:
         )
         self._output_label.pack(side=tk.LEFT)
 
-    def _build_action_section(self, parent: ctk.CTkFrame) -> None:
-        self._act_frame = ctk.CTkFrame(parent, fg_color="transparent")
-        self._act_frame.pack(fill=tk.X, pady=(0, 8), padx=2)
+    def _build_action_section(
+        self,
+        parent: ctk.CTkFrame,
+        *,
+        column: int = 0,
+        padx: tuple[int, int] = (0, 0),
+    ) -> None:
+        self._act_frame = ctk.CTkFrame(parent)
+        self._act_frame.grid(row=0, column=column, sticky="nsew", padx=padx)
 
         self._run_btn = ctk.CTkButton(
             self._act_frame,
@@ -676,6 +771,56 @@ class _App:
             self._act_frame, text="", width=60, anchor=tk.E
         )
         self._progress_label.pack(side=tk.RIGHT)
+
+    def _build_review_grid_section(
+        self,
+        parent: ctk.CTkFrame,
+        *,
+        column: int = 0,
+        padx: tuple[int, int] = (0, 0),
+    ) -> None:
+        self._review_frame = ctk.CTkFrame(parent)
+        self._review_frame.grid(row=0, column=column, sticky="nsew", padx=padx)
+
+        lbl = ctk.CTkLabel(
+            self._review_frame,
+            text=self._t("section_review_grid"),
+            font=ctk.CTkFont(weight="bold"),
+        )
+        lbl.pack(anchor=tk.W, padx=10, pady=5)
+        self._review_title_label = lbl
+
+        row = ctk.CTkFrame(self._review_frame, fg_color="transparent")
+        row.pack(fill=tk.X, padx=10, pady=(0, 6))
+
+        self._review_rows_label = ctk.CTkLabel(row, text=self._t("label_review_rows"))
+        self._review_rows_label.pack(side=tk.LEFT)
+        self._review_rows_entry = ctk.CTkEntry(row, textvariable=self._review_rows_var, width=48)
+        self._review_rows_entry.pack(side=tk.LEFT, padx=(4, 12))
+
+        self._review_cols_label = ctk.CTkLabel(row, text=self._t("label_review_cols"))
+        self._review_cols_label.pack(side=tk.LEFT)
+        self._review_cols_entry = ctk.CTkEntry(row, textvariable=self._review_cols_var, width=48)
+        self._review_cols_entry.pack(side=tk.LEFT, padx=(4, 12))
+
+        self._review_output_label = ctk.CTkLabel(row, text=self._t("label_review_output"))
+        self._review_output_label.pack(side=tk.LEFT)
+        self._review_output_entry = ctk.CTkEntry(
+            row,
+            textvariable=self._review_output_var,
+            width=180,
+        )
+        self._review_output_entry.pack(side=tk.LEFT, padx=(4, 12))
+
+        self._review_btn = ctk.CTkButton(
+            row,
+            text=self._t("btn_review_grid"),
+            command=self._run_review_grid,
+            width=150,
+            fg_color="#2E7D32",
+            hover_color="#1B5E20",
+        )
+        self._review_btn.pack(side=tk.LEFT)
 
     def _build_results_section(self, parent: ctk.CTkFrame) -> None:
         self._results_frame = ctk.CTkFrame(parent)
@@ -1000,6 +1145,11 @@ class _App:
             self._output_label.configure(text=self._t("output_same_as_input"))
 
         self._run_btn.configure(text=self._t("btn_run"))
+        self._review_title_label.configure(text=self._t("section_review_grid"))
+        self._review_rows_label.configure(text=self._t("label_review_rows"))
+        self._review_cols_label.configure(text=self._t("label_review_cols"))
+        self._review_output_label.configure(text=self._t("label_review_output"))
+        self._review_btn.configure(text=self._t("btn_review_grid"))
         self._cancel_btn.configure(text=self._t("btn_cancel"))
         self._result_summary_label.configure(text=self._t("section_runtime_panel"))
         self._selection_title_label.configure(text=self._t("section_result_details"))
@@ -1544,10 +1694,12 @@ class _App:
     def _set_ui_running(self, running: bool) -> None:
         if running:
             self._run_btn.configure(state="disabled")
+            self._review_btn.configure(state="disabled")
             self._cancel_btn.configure(state="normal")
             self._set_status("status_running")
         else:
             self._run_btn.configure(state="normal")
+            self._review_btn.configure(state="normal")
             self._cancel_btn.configure(state="disabled")
             self._progress_bar.set(0)
             self._progress_label.configure(text="")
@@ -1608,6 +1760,93 @@ class _App:
             target=_worker,
             args=(
                 tasks,
+                self._cancel_event,
+                self._result_queue,
+            ),
+            daemon=True,
+        )
+        self._worker_thread.start()
+        self._after_id = self.root.after(80, self._poll_queue)
+
+    def _build_review_tasks(self) -> list[dict[str, Any]]:
+        import pickle
+
+        tasks: list[dict[str, Any]] = []
+        if self.selected_files:
+            config = self._build_config()
+            config_bytes = pickle.dumps(config)
+            for path in self.selected_files:
+                tasks.append(
+                    {
+                        "filepath": str(Path(path)),
+                        "config_bytes": config_bytes,
+                        "output_dir": self.output_dir,
+                    }
+                )
+
+        if self.folder_jobs:
+            from frethmm.core.io import find_trace_files
+
+            for job in self.folder_jobs:
+                config = self._build_folder_job_config(job)
+                config_bytes = pickle.dumps(config)
+                folder_path = Path(job.folder)
+                files = find_trace_files(folder_path)
+                if not files:
+                    self._log(
+                        self._t("msg_folder_job_empty", path=str(folder_path)),
+                        "warning",
+                    )
+                    continue
+                job_output_dir = None
+                if self.output_dir:
+                    job_output_dir = str(Path(self.output_dir) / folder_path.name)
+                for path in files:
+                    tasks.append(
+                        {
+                            "filepath": str(path),
+                            "config_bytes": config_bytes,
+                            "output_dir": job_output_dir,
+                        }
+                    )
+        return tasks
+
+    def _run_review_grid(self) -> None:
+        import traceback
+
+        try:
+            rows = int(self._review_rows_var.get())
+            cols = int(self._review_cols_var.get())
+            if rows < 1 or cols < 1:
+                raise ValueError("rows and cols must be >= 1")
+            output_name = self._review_output_var.get().strip() or self._t("review_default_prefix")
+            tasks = self._build_review_tasks()
+        except Exception as exc:
+            messagebox.showerror(
+                self._t("msg_invalid_params"),
+                f"{exc}\n\n{traceback.format_exc()}",
+            )
+            return
+        if not tasks:
+            messagebox.showwarning(
+                self._t("msg_no_files_title"),
+                self._t("msg_review_no_files"),
+            )
+            return
+
+        self._set_ui_running(True)
+        self._cancel_event.clear()
+        self._result_queue = queue.Queue()
+        self._review_image_paths = []
+        self._log(self._t("log_review_start", n=len(tasks)), "header")
+
+        self._worker_thread = threading.Thread(
+            target=_review_worker,
+            args=(
+                tasks,
+                output_name,
+                rows,
+                cols,
                 self._cancel_event,
                 self._result_queue,
             ),
@@ -1770,6 +2009,27 @@ class _App:
                         warnings=self._result_stats["warnings"],
                         errors=self._result_stats["errors"],
                         path=self._last_output_path or self._t("result_panel_none"),
+                    ),
+                )
+
+        elif msg.type == _REVIEW_DONE:
+            info: dict = msg.payload
+            self._review_image_paths = list(info.get("image_paths", []))
+            count = int(info.get("count", 0))
+            for image_path in self._review_image_paths:
+                self._last_output_path = image_path
+                self._runtime_output_value.configure(text=image_path)
+                self._log(
+                    self._t("log_review_output_written", path=image_path),
+                    "success",
+                )
+            if self._review_image_paths:
+                messagebox.showinfo(
+                    self._t("msg_review_complete_title"),
+                    self._t(
+                        "msg_review_complete",
+                        count=count,
+                        paths="\n".join(self._review_image_paths),
                     ),
                 )
 
