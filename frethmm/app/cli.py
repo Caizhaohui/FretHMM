@@ -47,6 +47,28 @@ def build_parser() -> argparse.ArgumentParser:
     tdp.add_argument("--states", type=int, default=None)
     tdp.add_argument("--output", type=str, default=None)
 
+    review = sub.add_parser(
+        "review-grid",
+        help="Batch-classify traces and generate a visual review grid",
+    )
+    review.add_argument("--input-dir", type=str, required=True, help="Directory of trace files")
+    review.add_argument("--output", type=str, required=True, help="Output PNG path for the review grid")
+    review.add_argument("--output-dir", type=str, default=None, help="Optional directory for classified CSV outputs")
+    review.add_argument("--states", type=int, default=2, help="Number of HMM states (default: 2)")
+    review.add_argument("--guesses", type=str, default=None, help="Comma-separated initial signal guesses")
+    review.add_argument("--max-iter", type=int, default=500, help="Max Baum-Welch iterations (default: 500)")
+    review.add_argument("--tol", type=float, default=1e-4, help="Convergence tolerance (default: 1e-4)")
+    review.add_argument("--workers", type=int, default=1, help="Parallel workers for batch mode (default: 1)")
+    review.add_argument("--mode", choices=["auto", "paired_channel", "single_channel"], default="auto")
+    review.add_argument(
+        "--signal-column",
+        type=int,
+        default=1,
+        help="1-based signal column index after Time for single_channel mode (default: 1)",
+    )
+    review.add_argument("--rows", type=int, default=4, help="Number of panel rows per review page")
+    review.add_argument("--cols", type=int, default=4, help="Number of panels per row in the review grid")
+
     sub.add_parser("gui", help="Launch the FretHMM GUI")
     return parser
 
@@ -108,6 +130,34 @@ def cmd_tdp(args: argparse.Namespace) -> None:
     )
 
 
+def cmd_review_grid(args: argparse.Namespace) -> None:
+    from frethmm.viz.review_grid import generate_review_grid
+
+    guesses = [float(value) for value in args.guesses.split(",")] if args.guesses else None
+    config = ClassificationConfig(
+        n_states=args.states,
+        max_iter=args.max_iter,
+        tol=args.tol,
+        guesses=guesses,
+        workers=args.workers,
+        data_mode=args.mode,
+        signal_column=args.signal_column,
+    )
+    output_dir = Path(args.output_dir) if args.output_dir else None
+    results, image_paths = generate_review_grid(
+        input_dir=Path(args.input_dir),
+        config=config,
+        output=Path(args.output),
+        results_dir=output_dir,
+        rows=args.rows,
+        cols=args.cols,
+    )
+    print("\nReview grid page(s) saved to:")
+    for image_path in image_paths:
+        print(f"  {image_path}")
+    print(f"Rendered {len(results)} file(s).")
+
+
 def cmd_gui(_args: argparse.Namespace) -> None:
     from frethmm.app.gui import run_gui
 
@@ -124,6 +174,8 @@ def main() -> None:
         cmd_run(args)
     elif args.command == "tdp":
         cmd_tdp(args)
+    elif args.command == "review-grid":
+        cmd_review_grid(args)
     elif args.command == "gui":
         cmd_gui(args)
 
