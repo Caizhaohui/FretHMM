@@ -121,6 +121,10 @@ frethmm tdp --input-dir ./results/ --states 3 --output tdp.png
 frethmm gui
 ```
 
+GUI 界面截图（v1.0.0，含批量 review grid 审查区块）：
+
+![FretHMM GUI v1.0.0](docs/images/gui-v1.0.0-review-grid.png)
+
 ### GUI 使用说明
 
 ```bash
