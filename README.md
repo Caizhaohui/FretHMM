@@ -248,6 +248,15 @@ pytest tests/ -v
 
 ## 更新日志
 
+### v1.0.0 (2026-06-04)
+
+面向人工审查的批量可视化发布版本：
+
+- **批量 review grid CLI**：新增 `review-grid` 子命令，可对目录中的单分子轨迹批量分类并导出分页拼图总览
+- **GUI/EXE review grid**：GUI 新增 `Batch Review Grid` 区块，支持从文件或文件夹直接生成分页审查图
+- **分页拼图布局**：支持自定义 `rows x cols`，适合 `2-state`、`3-state` 等批量样本的人眼快速筛查
+- **可视化审查增强**：每个子图叠加 raw signal 和 classified trace，并显示文件名、`log_prob`、`state means`
+
 ### v0.6.0 (2026-06-01)
 
 GUI 界面布局优化与打包瘦身：
@@ -259,15 +268,6 @@ GUI 界面布局优化与打包瘦身：
 - **空态安全**：`_tree`、`_log_text` 等控件初始化为 `None`，所有访问前增加空检查，防止构建阶段异常
 - **PyInstaller 打包瘦身**：精简 spec 文件，使用 `collect_data_files` + `collect_dynamic_libs` 替代 `collect_all`；排除 PyQt5 / matplotlib / pandas / pytest / torch 等未使用的包，显著减小 EXE 体积
 - **`--onefile` 模式**：`build_exe.py` 新增 `--onefile` 参数，通过 `FRETHMM_ONEFILE` 环境变量控制生成单文件 EXE
-
-### v1.0.0 (2026-06-04)
-
-面向人工审查的批量可视化发布版本：
-
-- **批量 review grid CLI**：新增 `review-grid` 子命令，可对目录中的单分子轨迹批量分类并导出分页拼图总览
-- **GUI/EXE review grid**：GUI 新增 `Batch Review Grid` 区块，支持从文件或文件夹直接生成分页审查图
-- **分页拼图布局**：支持自定义 `rows x cols`，适合 `2-state`、`3-state` 等批量样本的人眼快速筛查
-- **可视化审查增强**：每个子图叠加 raw signal 和 classified trace，并显示文件名、`log_prob`、`state means`
 
 ### v0.5.0 (2026-06-01)
 
