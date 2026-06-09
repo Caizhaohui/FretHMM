@@ -151,6 +151,9 @@ def write_summary_json(
         "transition_counts": result.transitions_found.astype(int).tolist(),
         "transition_probabilities": result.transition_matrix.astype(float).tolist(),
         "dwell_by_state": dwell_by_state,
+        "low_state_tail_trim_seconds": result.low_state_tail_trim_seconds,
+        "low_state_tail_cutoff_time": result.low_state_tail_cutoff_time,
+        "low_state_tail_kept_frames": result.low_state_tail_kept_frames,
         "warnings": list(result.warnings),
     }
     out_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")

@@ -10,6 +10,8 @@ from frethmm.core.io import read_signal_trace
 from frethmm.domain.models import ClassificationConfig, ClassificationResult
 
 try:
+    import matplotlib
+    matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     HAS_MPL = True
@@ -58,13 +60,17 @@ def _plot_review_page(
     )
 
     for ax, result in zip(axes.flat, results):
-        trace = read_signal_trace(
-            result.filepath,
-            mode=config.data_mode,
-            signal_column=config.signal_column,
-        )
-        time = trace.time
-        signal = trace.signal
+        if result.trace_time is not None and result.trace_signal is not None:
+            time = result.trace_time
+            signal = result.trace_signal
+        else:
+            trace = read_signal_trace(
+                result.filepath,
+                mode=config.data_mode,
+                signal_column=config.signal_column,
+            )
+            time = trace.time
+            signal = trace.signal
         classified = result.classified_signal
 
         ax.plot(time, signal, color="#90A4AE", linewidth=0.9, alpha=0.9)

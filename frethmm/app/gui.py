@@ -285,6 +285,7 @@ class _App:
         self._export_report_var = tk.BooleanVar(value=False)
         self._export_path_var = tk.BooleanVar(value=False)
         self._export_dwell_var = tk.BooleanVar(value=False)
+        self._low_state_tail_trim_var = tk.StringVar(value="")
         self._review_rows_var = tk.IntVar(value=4)
         self._review_cols_var = tk.IntVar(value=8)
         self._review_output_var = tk.StringVar(value="review_grid.png")
@@ -698,6 +699,28 @@ class _App:
             variable=self._export_dwell_var,
         )
         self._chk_export_dwell.pack(side=tk.LEFT, padx=(0, 10))
+
+        filter_row = ctk.CTkFrame(self._out_frame, fg_color="transparent")
+        filter_row.pack(fill=tk.X, padx=10, pady=(0, 5))
+        self._trim_filter_label = ctk.CTkLabel(
+            filter_row,
+            text=self._t("label_low_state_tail_trim"),
+            width=100,
+            anchor=tk.W,
+        )
+        self._trim_filter_label.pack(side=tk.LEFT, padx=(0, 8))
+        self._trim_filter_entry = ctk.CTkEntry(
+            filter_row,
+            textvariable=self._low_state_tail_trim_var,
+            width=90,
+        )
+        self._trim_filter_entry.pack(side=tk.LEFT, padx=(0, 8))
+        self._trim_filter_hint = ctk.CTkLabel(
+            filter_row,
+            text=self._t("low_state_tail_trim_hint"),
+            text_color="#757575",
+        )
+        self._trim_filter_hint.pack(side=tk.LEFT)
         
         out_row = ctk.CTkFrame(self._out_frame, fg_color="transparent")
         out_row.pack(fill=tk.X, padx=10, pady=5)
@@ -1138,6 +1161,8 @@ class _App:
         self._output_options_hint.configure(text=self._t("output_options_hint"))
         self._chk_export_path.configure(text=self._t("output_option_path"))
         self._chk_export_dwell.configure(text=self._t("output_option_dwell"))
+        self._trim_filter_label.configure(text=self._t("label_low_state_tail_trim"))
+        self._trim_filter_hint.configure(text=self._t("low_state_tail_trim_hint"))
         self._btn_output.configure(text=self._t("btn_output_folder"))
         self._btn_output_reset.configure(text=self._t("btn_output_reset"))
         self._btn_export_classified.configure(text=self._t("btn_export_classified"))
@@ -1510,7 +1535,10 @@ class _App:
         )
         if d:
             self.output_dir = d
-            self._output_label.configure(text=d, text_color="#212121")
+            self._output_label.configure(
+                text=self._t("output_custom_folder_selected"),
+                text_color="#212121",
+            )
             self._set_status("status_output_selected", path=d)
 
     def _reset_output(self) -> None:
@@ -1607,6 +1635,18 @@ class _App:
         if signal_column < 1:
             raise ValueError(self._t("msg_invalid_signal_column", v=signal_column))
 
+    def _parse_low_state_tail_trim_seconds(self) -> Optional[float]:
+        raw_value = self._low_state_tail_trim_var.get().strip()
+        if not raw_value:
+            return None
+        try:
+            value = float(raw_value)
+        except ValueError:
+            raise ValueError(self._t("msg_invalid_low_state_tail_trim", v=raw_value))
+        if value <= 0:
+            raise ValueError(self._t("msg_invalid_low_state_tail_trim", v=raw_value))
+        return value
+
     def _build_config(self):
         from frethmm.domain.models import ClassificationConfig
 
@@ -1618,6 +1658,7 @@ class _App:
         self._validate_signal_column(signal_column)
         n_states = self._states_var.get()
         guesses = self._parse_guesses(g_str, n_states)
+        low_state_tail_trim_seconds = self._parse_low_state_tail_trim_seconds()
 
         return ClassificationConfig(
             n_states=n_states,
@@ -1627,6 +1668,7 @@ class _App:
             workers=self._workers_var.get(),
             data_mode=self._mode_var.get(),
             signal_column=signal_column,
+            low_state_tail_trim_seconds=low_state_tail_trim_seconds,
         )
 
     def _build_folder_job_config(self, job: _FolderBatchJob):
@@ -1634,6 +1676,7 @@ class _App:
 
         self._validate_signal_column(job.signal_column)
         guesses = self._parse_guesses(job.guesses_text, job.n_states)
+        low_state_tail_trim_seconds = self._parse_low_state_tail_trim_seconds()
         return ClassificationConfig(
             n_states=job.n_states,
             max_iter=job.max_iter,
@@ -1642,6 +1685,7 @@ class _App:
             workers=job.workers,
             data_mode=job.data_mode,
             signal_column=job.signal_column,
+            low_state_tail_trim_seconds=low_state_tail_trim_seconds,
         )
 
     def _build_tasks(self) -> list[dict[str, Any]]:

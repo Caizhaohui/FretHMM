@@ -30,3 +30,12 @@ htmlcov/
 output/
 _values2_verify/
 _verify_legacy_split/
+
+# Logs
+logs/
+
+# Review grid output (generated, not source)
+review_grid.png
+
+# OS thumbnails
+desktop.ini

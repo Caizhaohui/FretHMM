@@ -31,6 +31,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="1-based signal column index after Time for single_channel mode (default: 1)",
     )
     run.add_argument(
+        "--low-state-tail-trim-seconds",
+        type=float,
+        default=None,
+        help=(
+            "Optional trim duration in seconds. If set, FretHMM first classifies once, "
+            "then trims raw data after the lowest state has persisted for this long, "
+            "then classifies the trimmed raw data again."
+        ),
+    )
+    run.add_argument(
         "--classified-only",
         action="store_true",
         help="Write only *_classified.csv and skip summary/report/path/dwell outputs",
@@ -66,6 +76,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=1,
         help="1-based signal column index after Time for single_channel mode (default: 1)",
     )
+    review.add_argument(
+        "--low-state-tail-trim-seconds",
+        type=float,
+        default=None,
+        help=(
+            "Optional trim duration in seconds. If set, FretHMM first classifies once, "
+            "then trims raw data after the lowest state has persisted for this long, "
+            "then classifies the trimmed raw data again."
+        ),
+    )
     review.add_argument("--rows", type=int, default=4, help="Number of panel rows per review page")
     review.add_argument("--cols", type=int, default=4, help="Number of panels per row in the review grid")
 
@@ -87,6 +107,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         workers=args.workers,
         data_mode=args.mode,
         signal_column=args.signal_column,
+        low_state_tail_trim_seconds=args.low_state_tail_trim_seconds,
     )
     output_dir = Path(args.output_dir) if args.output_dir else None
     results = (
@@ -142,6 +163,7 @@ def cmd_review_grid(args: argparse.Namespace) -> None:
         workers=args.workers,
         data_mode=args.mode,
         signal_column=args.signal_column,
+        low_state_tail_trim_seconds=args.low_state_tail_trim_seconds,
     )
     output_dir = Path(args.output_dir) if args.output_dir else None
     results, image_paths = generate_review_grid(

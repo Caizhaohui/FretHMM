@@ -133,6 +133,54 @@ def fit_signal_hmm(
         transitions_found=transitions_found,
         filepath=trace.filepath,
         warnings=captured_warnings,
+        trace_time=trace.time.copy(),
+        trace_signal=trace.signal.copy(),
+    )
+
+
+def trim_trace_after_low_state_tail(
+    trace: SignalTrace,
+    first_pass_result: ClassificationResult,
+    duration_seconds: float,
+) -> tuple[SignalTrace, Optional[float]]:
+    lowest_state = int(np.argmin(first_pass_result.state_means))
+    run_start_index: Optional[int] = None
+    cutoff_time: Optional[float] = None
+
+    for index, state in enumerate(first_pass_result.state_path):
+        if int(state) == lowest_state:
+            if run_start_index is None:
+                run_start_index = index
+            elapsed = trace.time[index] - trace.time[run_start_index]
+            if elapsed >= duration_seconds:
+                cutoff_time = float(trace.time[run_start_index] + duration_seconds)
+                break
+        else:
+            run_start_index = None
+
+    if cutoff_time is None:
+        return trace, None
+
+    keep_mask = trace.time <= cutoff_time
+    if np.all(keep_mask):
+        return trace, cutoff_time
+
+    return (
+        SignalTrace(
+            time=trace.time[keep_mask].copy(),
+            signal=trace.signal[keep_mask].copy(),
+            observations=trace.observations[keep_mask].copy(),
+            filepath=trace.filepath,
+            mode=trace.mode,
+            channel_1=trace.channel_1[keep_mask].copy() if trace.channel_1 is not None else None,
+            channel_2=trace.channel_2[keep_mask].copy() if trace.channel_2 is not None else None,
+            derived_signal=(
+                trace.derived_signal[keep_mask].copy()
+                if trace.derived_signal is not None
+                else None
+            ),
+        ),
+        cutoff_time,
     )
 
 
@@ -144,7 +192,20 @@ def process_trace_file(
     export_options: Optional[ExportOptions] = None,
 ) -> ClassificationResult:
     trace = read_signal_trace(filepath, mode=config.data_mode, signal_column=config.signal_column)
-    result = fit_signal_hmm(trace, config)
+    trim_seconds = config.low_state_tail_trim_seconds
+    if trim_seconds is not None:
+        first_pass_result = fit_signal_hmm(trace, config)
+        trace, cutoff_time = trim_trace_after_low_state_tail(
+            trace,
+            first_pass_result,
+            trim_seconds,
+        )
+        result = fit_signal_hmm(trace, config)
+        result.low_state_tail_trim_seconds = trim_seconds
+        result.low_state_tail_cutoff_time = cutoff_time
+        result.low_state_tail_kept_frames = trace.n_frames
+    else:
+        result = fit_signal_hmm(trace, config)
     exports = _resolve_export_options(export_options, classified_only)
     if exports.classified_csv:
         write_classified_csv(trace, result, output_dir)

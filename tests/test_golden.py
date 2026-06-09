@@ -190,3 +190,35 @@ def test_cli_run_classified_only_writes_only_primary_csv(tmp_path):
     assert not (tmp_path / "Values1report.dat").exists()
     assert not (tmp_path / "Values1path.dat").exists()
     assert not (tmp_path / "Values1dwell.dat").exists()
+
+
+@pytest.mark.skipif(not VALUES1_CSV.exists(), reason="Values1 sample data not found")
+def test_cli_run_with_low_state_tail_trim_reports_trim_warning(tmp_path):
+    cmd = [
+        sys.executable,
+        "-m",
+        "frethmm.app.cli",
+        "run",
+        "--files",
+        str(VALUES1_CSV),
+        "--states",
+        "2",
+        "--mode",
+        "single_channel",
+        "--low-state-tail-trim-seconds",
+        "1",
+        "--output-dir",
+        str(tmp_path),
+    ]
+
+    completed = subprocess.run(
+        cmd,
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "Applied low-state tail trim after 1s" in completed.stdout
+    assert (tmp_path / "Values1_classified.csv").exists()
+    assert (tmp_path / "Values1_summary.json").exists()

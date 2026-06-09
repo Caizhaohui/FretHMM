@@ -44,10 +44,13 @@ _TR_EN: dict[str, str] = {
     "output_option_path": "path.dat",
     "output_option_dwell": "dwell.dat",
     "output_options_hint": "Optional:",
+    "label_low_state_tail_trim": "Filter (sec):",
+    "low_state_tail_trim_hint": "Blank = off; 100 or 250 trims after low state persists that long.",
     "btn_output_folder": "Output Folder...",
     "btn_output_reset": "Use Input Folder",
     "btn_export_classified": "Export Classified CSV...",
     "output_same_as_input": "(same as input file)",
+    "output_custom_folder_selected": "(custom output folder selected)",
     "btn_run": "Run Analysis",
     "btn_review_grid": "Generate Review Grid",
     "btn_cancel": "Cancel",
@@ -90,6 +93,7 @@ _TR_EN: dict[str, str] = {
     "msg_invalid_tol": "Invalid tolerance value: {v}",
     "msg_guess_mismatch": "Number of guesses ({g}) does not match number of states ({s}).",
     "msg_invalid_signal_column": "Signal column must be >= 1, got {v}.",
+    "msg_invalid_low_state_tail_trim": "Filter seconds must be a positive number or blank, got: {v}",
     "msg_no_result_selected_title": "No result selected",
     "msg_no_result_selected": "Select a successful result row first.",
     "msg_export_missing": "Classified CSV not found: {path}",
@@ -177,10 +181,13 @@ _TR_ZH: dict[str, str] = {
     "output_option_path": "path.dat",
     "output_option_dwell": "dwell.dat",
     "output_options_hint": "可选:",
+    "label_low_state_tail_trim": "过滤(秒):",
+    "low_state_tail_trim_hint": "留空表示不过滤；填写 100 或 250 表示低值状态持续该时长后截断。",
     "btn_output_folder": "输出文件夹...",
     "btn_output_reset": "使用输入目录",
     "btn_export_classified": "导出分类 CSV...",
     "output_same_as_input": "（与输入文件相同）",
+    "output_custom_folder_selected": "（已选择自定义输出文件夹）",
     "btn_run": "运行分析",
     "btn_review_grid": "生成审查拼图",
     "btn_cancel": "取消",
@@ -223,6 +230,7 @@ _TR_ZH: dict[str, str] = {
     "msg_invalid_tol": "容差值无效: {v}",
     "msg_guess_mismatch": "猜测数量 ({g}) 与状态数 ({s}) 不匹配。",
     "msg_invalid_signal_column": "信号列必须 >= 1，当前为 {v}。",
+    "msg_invalid_low_state_tail_trim": "过滤秒数必须为正数或留空，当前为: {v}",
     "msg_no_result_selected_title": "未选择结果",
     "msg_no_result_selected": "请先选择一条成功分析的结果。",
     "msg_export_missing": "未找到分类 CSV: {path}",
@@ -266,7 +274,7 @@ _TR_ZH: dict[str, str] = {
     "all_files_label": "所有文件",
 }
 
-_CURRENT = "en"
+_CURRENT = "zh"
 
 
 def set_language(lang: str) -> None:

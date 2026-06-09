@@ -40,6 +40,7 @@ class ClassificationConfig:
     workers: int = 1
     data_mode: Literal["auto", "paired_channel", "single_channel"] = "auto"
     signal_column: int = 1
+    low_state_tail_trim_seconds: Optional[float] = None
 
     def __post_init__(self) -> None:
         if self.n_states < 1:
@@ -47,6 +48,14 @@ class ClassificationConfig:
         if self.guesses is not None and len(self.guesses) != self.n_states:
             raise ValueError(
                 f"Expected {self.n_states} guesses, got {len(self.guesses)}"
+            )
+        if (
+            self.low_state_tail_trim_seconds is not None
+            and self.low_state_tail_trim_seconds <= 0
+        ):
+            raise ValueError(
+                "low_state_tail_trim_seconds must be > 0 when provided, "
+                f"got {self.low_state_tail_trim_seconds}"
             )
 
     def default_state_means(
@@ -107,6 +116,11 @@ class ClassificationResult:
     transitions_found: np.ndarray
     filepath: Optional[Path] = None
     warnings: list[str] = field(default_factory=list)
+    trace_time: Optional[np.ndarray] = None
+    trace_signal: Optional[np.ndarray] = None
+    low_state_tail_trim_seconds: Optional[float] = None
+    low_state_tail_cutoff_time: Optional[float] = None
+    low_state_tail_kept_frames: Optional[int] = None
 
     @property
     def dwell_segments(self) -> np.ndarray:
