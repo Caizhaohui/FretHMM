@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "frethmm"
-version = "1.1.0"
+version = "1.4.0"
 description = "FretHMM: Hidden Markov Model state classification for single-molecule trajectories"
 requires-python = ">=3.10"
 dependencies = [
@@ -29,3 +29,7 @@ frethmm-gui = "frethmm.app.gui:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["frethmm*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

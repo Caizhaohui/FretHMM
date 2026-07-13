@@ -19,6 +19,30 @@ except ImportError:
     HAS_MPL = False
 
 
+def _describe_grid_states(
+    config: ClassificationConfig,
+    results: list[ClassificationResult],
+) -> str:
+    """Human-readable state-count label for the review-grid title.
+
+    ``config.n_states`` may now be the ``"auto"`` sentinel; the title should
+    describe what was actually fit. With auto-selection the per-trace state
+    count can vary, so we summarise the range; otherwise we echo the fixed
+    count from the first result (or fall back to the config value).
+    """
+    if getattr(config, "is_auto_states", False) and results:
+        counts = {int(r.n_states) for r in results}
+        if len(counts) == 1:
+            return f"{next(iter(counts))} states (BIC auto)"
+        lo, hi = min(counts), max(counts)
+        return f"{lo}-{hi} states (BIC auto)"
+    if results:
+        return f"{results[0].n_states} states"
+    # Last-resort fallback (kept defensive even though results is non-empty here).
+    n_states = getattr(config, "n_states", "?")
+    return f"{n_states} states"
+
+
 def _ordered_results(results: list[ClassificationResult]) -> list[ClassificationResult]:
     ordered = sorted(
         [result for result in results if result.filepath is not None],
@@ -95,7 +119,8 @@ def _plot_review_page(
 
     fig.suptitle(
         (
-            f"FretHMM review grid: {total_count} traces, {config.n_states} states "
+            f"FretHMM review grid: {total_count} traces, "
+            f"{_describe_grid_states(config, results)} "
             f"(page {page_index}/{page_count})"
         ),
         fontsize=12,

@@ -1,5 +1,6 @@
 """Tests for FretHMM I/O utilities."""
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -18,11 +19,10 @@ from frethmm.domain.models import ExportOptions
 from frethmm.domain.models import ClassificationResult, SignalTrace
 from frethmm.formats.report_parser import read_report_file
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-HAMMY_MAIN = PROJECT_ROOT / "HaMMy-main" / "HaMMy"
-SAMPLE_2STATE_REPORT = HAMMY_MAIN / "2_states-2_real-J7" / "1report.dat"
-SAMPLE_2STATE_EDGE_REPORT = HAMMY_MAIN / "2_states-2_real-J7" / "26report.dat"
-SAMPLE_10STATE_DIR = HAMMY_MAIN / "10_states_5_real-250nM_RecA"
+FIXTURE_DIR = Path(__file__).resolve().parent / "data" / "legacy_reports"
+SAMPLE_2STATE_REPORT = FIXTURE_DIR / "trace_01report.dat"
+SAMPLE_2STATE_EDGE_REPORT = FIXTURE_DIR / "extreme_log_probability.dat"
+SAMPLE_MULTISTATE_REPORT = FIXTURE_DIR / "three_state_report.dat"
 
 
 class TestComputeRatioSignal:
@@ -40,46 +40,33 @@ class TestComputeRatioSignal:
 
 
 class TestReadReport:
-    @pytest.mark.skipif(
-        not SAMPLE_2STATE_REPORT.exists(),
-        reason="Sample report file not found",
-    )
     def test_parse_2state_report(self):
         report = read_report_file(SAMPLE_2STATE_REPORT)
         assert report["n_states"] == 2
-        np.testing.assert_allclose(report["means"], [0.340479, 0.692749], atol=1e-6)
-        assert report["log_prob"] == pytest.approx(3914.83, abs=0.01)
-        assert report["sigma"] == pytest.approx(0.0697278, abs=1e-7)
-        assert report["signal_sigma"] == pytest.approx(164.443, abs=1e-3)
+        np.testing.assert_allclose(report["means"], [-253.287, 1813.47], atol=1e-6)
+        assert report["log_prob"] == pytest.approx(-13900.49, abs=0.01)
+        assert report["sigma"] == pytest.approx(250.00666974884163)
+        assert report["signal_sigma"] == pytest.approx(660.8)
         assert report["transmat"].shape == (2, 2)
-        assert report["transmat"][0, 1] == pytest.approx(0.0571831, abs=1e-7)
-        assert report["transmat"][1, 0] == pytest.approx(0.0455867, abs=1e-7)
-        assert report["transitions_found"][0, 1] == 95
-        assert report["transitions_found"][1, 0] == 95
+        assert report["transmat"][0, 1] == pytest.approx(0.0005540166408136734)
+        assert report["transmat"][1, 0] == pytest.approx(0.010309278537558383)
+        assert report["transitions_found"][0, 1] == 1
+        assert report["transitions_found"][1, 0] == 2
 
-    @pytest.mark.skipif(
-        not SAMPLE_2STATE_EDGE_REPORT.exists(),
-        reason="Sample edge-case report file not found",
-    )
     def test_parse_extreme_log_probability(self):
         report = read_report_file(SAMPLE_2STATE_EDGE_REPORT)
         assert report["n_states"] == 2
         assert report["log_prob"] == pytest.approx(-1e100)
         assert report["transitions_found"].sum() == 0
 
-    @pytest.mark.skipif(
-        not SAMPLE_10STATE_DIR.exists(),
-        reason="Sample 10-state dir not found",
-    )
-    def test_parse_10state_report(self):
-        report = read_report_file(SAMPLE_10STATE_DIR / "1.dat")
-        assert report["n_states"] == 10
-        assert report["log_prob"] == pytest.approx(2617.29, abs=0.01)
-        assert len(report["means"]) == 10
-        assert report["means"][0] == pytest.approx(0.139365, abs=1e-6)
-        assert report["means"][-1] == pytest.approx(1.57991, abs=1e-5)
-        assert report["transmat"].shape == (10, 10)
-        assert report["transmat"][0, 1] == pytest.approx(6.64491e-08, rel=1e-6)
+    def test_parse_multistate_report(self):
+        report = read_report_file(SAMPLE_MULTISTATE_REPORT)
+        assert report["n_states"] == 3
+        assert report["log_prob"] == pytest.approx(123.45)
+        np.testing.assert_allclose(report["means"], [0.1, 0.5, 0.9])
+        assert report["transmat"].shape == (3, 3)
+        assert report["transmat"][0, 1] == pytest.approx(0.08)
+        assert report["transitions_found"][1, 2] == 2
 
 
 class TestReadWriteReport:
@@ -147,6 +134,62 @@ class TestReadWriteReport:
         summary_text = summary.read_text(encoding="utf-8")
         assert '"source_file": "signal.csv"' in summary_text
         assert '"state_means": [' in summary_text
+
+    def test_write_summary_includes_multistart_fields_when_active(self, tmp_path):
+        """A multi-start result (n_init > 1) records n_init / bic / aic."""
+        result = ClassificationResult(
+            n_states=2,
+            log_prob=-12.34,
+            state_means=np.array([11.0, 20.0]),
+            state_sigma=1.5,
+            signal_sigma=2.0,
+            transition_matrix=np.array([[0.9, 0.1], [0.2, 0.8]]),
+            state_path=np.array([0, 0, 1]),
+            classified_signal=np.array([11.0, 11.0, 20.0]),
+            fraction_spent=np.array([[0.0, 2 / 3], [0.0, 0.0]]),
+            transitions_found=np.array([[0, 1], [0, 0]], dtype=int),
+            filepath=tmp_path / "signal.csv",
+            n_init=10,
+            n_init_used=10,
+            best_start_index=3,
+            bic=1234.5,
+            aic=1100.2,
+        )
+        summary = write_summary_json(result, tmp_path)
+        payload = json.loads(summary.read_text(encoding="utf-8"))
+
+        assert payload["n_init"] == 10
+        assert payload["n_init_used"] == 10
+        assert payload["best_start_index"] == 3
+        assert payload["bic"] == 1234.5
+        assert payload["aic"] == 1100.2
+
+    def test_write_summary_omits_multistart_fields_for_legacy_single_start(self, tmp_path):
+        """n_init unset (or == 1) keeps the summary byte-compatible with v1.1.
+
+        Multi-start and model-selection fields must not appear so that pinned
+        single-start regression fixtures remain identical.
+        """
+        result = ClassificationResult(
+            n_states=2,
+            log_prob=-12.34,
+            state_means=np.array([11.0, 20.0]),
+            state_sigma=1.5,
+            signal_sigma=2.0,
+            transition_matrix=np.array([[0.9, 0.1], [0.2, 0.8]]),
+            state_path=np.array([0, 0, 1]),
+            classified_signal=np.array([11.0, 11.0, 20.0]),
+            fraction_spent=np.array([[0.0, 2 / 3], [0.0, 0.0]]),
+            transitions_found=np.array([[0, 1], [0, 0]], dtype=int),
+            filepath=tmp_path / "signal.csv",
+            # Deliberately leave n_init/bic/aic/model_candidates at their
+            # defaults (None) to emulate a pre-multistart result.
+        )
+        summary = write_summary_json(result, tmp_path)
+        payload = json.loads(summary.read_text(encoding="utf-8"))
+
+        for absent in ("n_init", "n_init_used", "best_start_index", "bic", "aic", "model_candidates"):
+            assert absent not in payload, f"{absent} should be absent for single-start legacy output"
 
 
 class TestReadTrace:

@@ -2,6 +2,8 @@
 
 This document turns the current `pyHaMMy` prototype into an executable refactor plan for the next product shape: `FretHMM`.
 
+> **Status snapshot (v1.4.0, 2026-06):** Most Phase 0–3 product goals and the modular layout are **done**. Phase 4 multi-start + BIC is **done**; post-fit cleanup / preprocess / richer diagnostics remain **open**. Phase 5 interactive GUI preview is **open**. Phase 6 batch processing is largely **done**; experiment-level summary tables remain **open**. Phase 7 golden/synthetic tests for core CLI paths are largely **done**. Historical checkboxes below are kept for audit; prefer this snapshot over unchecked boxes when planning new work.
+
 Target product definition:
 
 - Input-first workflow for two-column single-molecule traces: `time, signal`
@@ -13,19 +15,19 @@ Target product definition:
 
 ### Product goals
 
-- [ ] Make two-column signal traces the default workflow
-- [ ] Treat HMM state classification as the core feature, not FRET-specific report compatibility
-- [ ] Provide a clean single-file workflow for `Values1.csv`-style data
-- [ ] Support batch processing for experiment directories
-- [ ] Keep legacy HaMMy-style exports only as optional compatibility artifacts
+- [x] Make two-column signal traces the default workflow
+- [x] Treat HMM state classification as the core feature, not FRET-specific report compatibility
+- [x] Provide a clean single-file workflow for `Values1.csv`-style data
+- [x] Support batch processing for experiment directories
+- [x] Keep legacy HaMMy-style exports only as optional compatibility artifacts
 
 ### Technical goals
 
-- [ ] Separate domain model, algorithms, export, and UI concerns
-- [ ] Reduce `FRET`-specific naming in core code
-- [ ] Add stable regression coverage for `Values1.csv`
-- [ ] Make GUI reflect the actual single-channel workflow
-- [ ] Define a future-proof module layout for `FretHMM`
+- [x] Separate domain model, algorithms, export, and UI concerns
+- [x] Reduce `FRET`-specific naming in core code
+- [x] Add stable regression coverage for `Values1.csv`
+- [ ] Make GUI reflect the actual single-channel workflow (batch UI done; interactive preview still open)
+- [x] Define a future-proof module layout for `FretHMM`
 
 ## 2. Current Baseline
 
@@ -185,13 +187,13 @@ Outcome:
 
 Tasks:
 
-- [ ] Add multi-start fitting to reduce local optimum sensitivity
-- [ ] Add AIC/BIC support for choosing state count
+- [x] Add multi-start fitting to reduce local optimum sensitivity
+- [x] Add AIC/BIC support for choosing state count
 - [ ] Add optional post-fit segment cleanup:
   - minimum dwell merging
   - merge nearly identical states
 - [ ] Add fit quality diagnostics
-- [ ] Add explicit handling for edge cases:
+- [x] Add explicit handling for edge cases:
   - constant traces
   - very short traces
   - NaN/Inf values
@@ -199,20 +201,26 @@ Tasks:
 
 Files to change:
 
-- [ ] `frethmm/model.py`
+- [x] `frethmm/model.py`
 - [ ] `frethmm/postprocess.py`
 - [ ] `frethmm/config.py`
 
 New files to add:
 
-- [ ] `frethmm/metrics.py`
+- [x] `frethmm/metrics.py`
 - [ ] `frethmm/preprocess.py`
 
 Acceptance:
 
-- [ ] Repeated runs on the same input are stable within defined tolerance
-- [ ] Model selection is no longer fully manual
-- [ ] Failure modes produce actionable warnings, not silent poor outputs
+- [x] Repeated runs on the same input are stable within defined tolerance
+- [x] Model selection is no longer fully manual
+- [x] Failure modes produce actionable warnings, not silent poor outputs
+
+> **Status (v1.2.0):** Multi-start fitting and BIC model selection landed in
+> `frethmm/core/model.py` + new `frethmm/core/metrics.py`, exposed via
+> `--n-init` / `--states auto` / `--min-states` / `--max-states` on the CLI
+> and a new GUI auto-select checkbox. Post-fit segment cleanup, a dedicated
+> preprocess module, and richer fit diagnostics remain open for a follow-up.
 
 ### Phase 5: Rebuild the GUI around the actual workflow
 
@@ -433,7 +441,7 @@ Recommended implementation order:
 4. [ ] Refactor domain naming from `FRET` to generic `signal` concepts
 5. [ ] Add summary JSON and state statistics export
 6. [ ] Rework GUI around preview + export
-7. [ ] Add model selection and multi-start fitting
+7. [x] Add model selection and multi-start fitting
 8. [ ] Expand batch processing and QC
 
 ## 7. Definition of Done

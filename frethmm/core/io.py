@@ -156,6 +156,26 @@ def write_summary_json(
         "low_state_tail_kept_frames": result.low_state_tail_kept_frames,
         "warnings": list(result.warnings),
     }
+    # Multi-start and model-selection metadata. A plain single-start fit
+    # (``n_init == 1``) must keep the summary byte-for-byte identical to the
+    # legacy output, so all algorithm-hardening fields are gated on multi-start
+    # being active (``n_init > 1``) or on BIC model-selection having run
+    # (``model_candidates`` populated by ``--states auto``).
+    is_multistart = result.n_init is not None and result.n_init > 1
+    is_auto_selected = result.model_candidates is not None
+    if is_multistart or is_auto_selected:
+        if result.n_init is not None:
+            payload["n_init"] = result.n_init
+        if result.n_init_used is not None:
+            payload["n_init_used"] = result.n_init_used
+        if result.best_start_index is not None:
+            payload["best_start_index"] = result.best_start_index
+        if result.bic is not None:
+            payload["bic"] = result.bic
+        if result.aic is not None:
+            payload["aic"] = result.aic
+        if result.model_candidates is not None:
+            payload["model_candidates"] = result.model_candidates
     out_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return out_path
 
@@ -243,6 +263,23 @@ def find_trace_files(
         and "dwell" not in f.stem.lower()
         and "_classified" not in f.stem.lower()
         and "_summary" not in f.stem.lower()
+    )
+
+
+def find_classified_files(input_dir: Union[str, Path]) -> list[Path]:
+    """List ``*_classified.csv`` files in a directory, sorted by name.
+
+    Deliberately separate from :func:`find_trace_files`, which *excludes*
+    classified outputs (they are downstream artifacts, not raw inputs). Event
+    analysis, by contrast, consumes exactly those classified files.
+    """
+    input_dir = Path(input_dir)
+    if not input_dir.is_dir():
+        raise NotADirectoryError(f"Not a directory: {input_dir}")
+    return sorted(
+        f
+        for f in input_dir.iterdir()
+        if f.is_file() and f.name.endswith("_classified.csv")
     )
 
 

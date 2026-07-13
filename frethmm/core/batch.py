@@ -34,6 +34,20 @@ def process_files(
     results: list[ClassificationResult] = []
     total = len(files)
 
+    def _format_result_line(result: ClassificationResult) -> str:
+        """One-line per-file summary including multi-start / BIC context."""
+        parts = [
+            f"  -> {result.n_states} states",
+            f"log_prob={result.log_prob:.2f}",
+        ]
+        # Surface BIC when model selection ran; otherwise surface n_init context
+        # only when multi-start is active, to avoid churning legacy logs.
+        if result.model_candidates is not None and result.bic is not None:
+            parts.append(f"bic={result.bic:.2f} (auto)")
+        elif result.n_init is not None and result.n_init > 1:
+            parts.append(f"n_init={result.n_init}")
+        return ", ".join(parts) + f", means={result.state_means}"
+
     def _print_warnings(result: ClassificationResult) -> None:
         for warning in result.warnings:
             print(f"    WARNING: {warning}")
@@ -46,10 +60,7 @@ def process_files(
                     result = process_trace_file(filepath, config, output_dir, classified_only)
                     results.append(result)
                     _print_warnings(result)
-                    print(
-                        f"  -> {result.n_states} states, log_prob={result.log_prob:.2f}, "
-                        f"means={result.state_means}"
-                    )
+                    print(_format_result_line(result))
                 except Exception as exc:
                     print(f"  -> ERROR: {exc}")
         else:
@@ -68,7 +79,7 @@ def process_files(
                         result = future.result()
                         ordered_results[idx] = result
                         _print_warnings(result)
-                        print(f"  -> {result.n_states} states, log_prob={result.log_prob:.2f}")
+                        print(_format_result_line(result))
                     except Exception as exc:
                         print(f"  -> ERROR: {exc}")
                 results = [result for result in ordered_results if result is not None]

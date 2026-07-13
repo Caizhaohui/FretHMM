@@ -1,54 +1,61 @@
-"""Golden tests based on bundled HaMMy reference outputs."""
+"""End-to-end regression tests using committed, de-identified fixtures."""
 
-from pathlib import Path
+from __future__ import annotations
+
 import hashlib
+import json
+from pathlib import Path
 import subprocess
 import sys
 
 import numpy as np
-import pytest
-import json
 
 from frethmm.core.model import sort_state_outputs
 from frethmm.viz.tdp import aggregate_transitions, load_reports
 
 
-WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
 REPO_ROOT = Path(__file__).resolve().parents[1]
-HAMMY_MAIN = WORKSPACE_ROOT / "HaMMy-main" / "HaMMy"
-SAMPLE_2STATE_DIR = HAMMY_MAIN / "2_states-2_real-J7"
-SAMPLE_10STATE_DIR = HAMMY_MAIN / "10_states_5_real-250nM_RecA"
-VALUES1_CSV = WORKSPACE_ROOT / "Values1.csv"
-VALUES2_CSV = WORKSPACE_ROOT / "Values2.csv"
-VALUES1_CLASSIFIED = REPO_ROOT / "tests" / "fixtures" / "Values1_classified.csv"
-VALUES1_SUMMARY = REPO_ROOT / "tests" / "fixtures" / "Values1_summary.json"
-VALUES2_HASHES = REPO_ROOT / "tests" / "fixtures" / "Values2_hashes.json"
+FIXTURE_ROOT = REPO_ROOT / "tests" / "data"
+LEGACY_REPORTS = FIXTURE_ROOT / "legacy_reports"
+SINGLE_TRACE = FIXTURE_ROOT / "single_channel_trace.csv"
+PAIRED_TRACE = FIXTURE_ROOT / "paired_channel_trace.csv"
 
 
-@pytest.mark.skipif(not SAMPLE_2STATE_DIR.exists(), reason="HaMMy sample data not found")
-def test_aggregate_transitions_matches_reference_2state_dataset():
-    reports = load_reports(SAMPLE_2STATE_DIR)
+def _run_cli(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-m", "frethmm.app.cli", *args],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
-    assert len(reports) == 26
 
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest().upper()
+
+
+def test_aggregate_transitions_reads_bundled_legacy_reports():
+    reports = load_reports(LEGACY_REPORTS)
+
+    assert len(reports) == 4
     starts, stops, weights = aggregate_transitions(reports)
     transition_map = {
         (round(float(start), 6), round(float(stop), 6)): int(weight)
         for start, stop, weight in zip(starts, stops, weights)
     }
+    assert transition_map[(-253.287, 1813.47)] == 1
+    assert transition_map[(1813.47, -253.287)] == 2
+    assert transition_map[(-283.731, 1564.96)] == 2
+    assert transition_map[(1564.96, -283.731)] == 3
 
-    assert transition_map[(0.340479, 0.692749)] == 95
-    assert transition_map[(0.692749, 0.340479)] == 95
-    assert (0.393029, 1.11388) not in transition_map
-    assert (1.11388, 0.393029) not in transition_map
 
+def test_load_reports_handles_bundled_two_state_format():
+    reports = load_reports(LEGACY_REPORTS)
 
-@pytest.mark.skipif(not SAMPLE_10STATE_DIR.exists(), reason="HaMMy sample data not found")
-def test_load_reports_reads_all_reference_10state_reports():
-    reports = load_reports(SAMPLE_10STATE_DIR)
-
-    assert len(reports) == 196
-    assert all(report["n_states"] == 10 for report in reports)
+    assert sorted(report["n_states"] for report in reports) == [2, 2, 2, 3]
+    two_state_means = [report["means"] for report in reports if report["n_states"] == 2]
+    assert any(np.allclose(means, [-253.287, 1813.47]) for means in two_state_means)
 
 
 def test_sort_state_outputs_remaps_viterbi_path_by_sorted_means():
@@ -81,144 +88,159 @@ def test_sort_state_outputs_remaps_viterbi_path_by_sorted_means():
     np.testing.assert_array_equal(viterbi_sorted, [0, 0, 1, 2, 1, 2])
 
 
-@pytest.mark.skipif(not VALUES1_CSV.exists(), reason="Values1 sample data not found")
-def test_cli_run_matches_values1_regression_outputs(tmp_path):
-    cmd = [
-        sys.executable,
-        "-m",
-        "frethmm.app.cli",
+def test_cli_run_matches_committed_single_channel_hashes(tmp_path):
+    completed = _run_cli(
         "run",
         "--files",
-        str(VALUES1_CSV),
+        str(SINGLE_TRACE),
         "--states",
         "2",
         "--mode",
         "single_channel",
+        "--n-init",
+        "1",
         "--output-dir",
         str(tmp_path),
-    ]
-
-    completed = subprocess.run(
-        cmd,
-        cwd=REPO_ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
     )
 
     assert "Done. Processed 1 file(s)." in completed.stdout
-    assert "Values1_classified.csv" in completed.stdout
-    assert "Values1_summary.json" in completed.stdout
-
-    assert (tmp_path / "Values1_classified.csv").read_text(encoding="utf-8") == (
-        VALUES1_CLASSIFIED.read_text(encoding="utf-8")
+    expected = json.loads(
+        (FIXTURE_ROOT / "single_channel_expected_hashes.json").read_text(
+            encoding="utf-8"
+        )
     )
-    assert (tmp_path / "Values1_summary.json").read_text(encoding="utf-8") == (
-        VALUES1_SUMMARY.read_text(encoding="utf-8")
-    )
+    assert _sha256(tmp_path / "single_channel_trace_classified.csv") == expected[
+        "classified_sha256"
+    ]
+    assert _sha256(tmp_path / "single_channel_trace_summary.json") == expected[
+        "summary_sha256"
+    ]
+
+    manifests = list(tmp_path.glob("frethmm_run_manifest_*.json"))
+    assert len(manifests) == 1
+    manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
+    assert manifest["application"]["version"] == "1.4.0"
+    assert manifest["command"] == "run"
+    assert manifest["parameters"]["fit"]["n_init"] == 1
+    assert manifest["inputs"][0]["name"] == SINGLE_TRACE.name
+    assert {Path(output["path"]).name for output in manifest["outputs"]} >= {
+        "single_channel_trace_classified.csv",
+        "single_channel_trace_summary.json",
+    }
 
 
-@pytest.mark.skipif(not VALUES2_CSV.exists(), reason="Values2 sample data not found")
-def test_cli_run_values2_single_channel_column_selection(tmp_path):
-    cmd = [
-        sys.executable,
-        "-m",
-        "frethmm.app.cli",
+def test_cli_run_supports_bundled_paired_channel_trace(tmp_path):
+    _run_cli(
         "run",
         "--files",
-        str(VALUES2_CSV),
+        str(PAIRED_TRACE),
         "--states",
         "2",
         "--mode",
-        "single_channel",
-        "--signal-column",
+        "paired_channel",
+        "--n-init",
         "1",
         "--output-dir",
         str(tmp_path),
-    ]
-
-    subprocess.run(
-        cmd,
-        cwd=REPO_ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
     )
 
-    expected = json.loads(VALUES2_HASHES.read_text(encoding="utf-8"))
-    classified_hash = hashlib.sha256(
-        (tmp_path / "Values2_classified.csv").read_bytes()
-    ).hexdigest().upper()
-    summary_hash = hashlib.sha256(
-        (tmp_path / "Values2_summary.json").read_bytes()
-    ).hexdigest().upper()
-
-    assert classified_hash == expected["classified_sha256"]
-    assert summary_hash == expected["summary_sha256"]
+    classified = tmp_path / "paired_channel_trace_classified.csv"
+    assert classified.read_text(encoding="utf-8").startswith("time,classified_mean\n")
+    summary = json.loads(
+        (tmp_path / "paired_channel_trace_summary.json").read_text(encoding="utf-8")
+    )
+    assert summary["n_states"] == 2
 
 
-@pytest.mark.skipif(not VALUES1_CSV.exists(), reason="Values1 sample data not found")
-def test_cli_run_classified_only_writes_only_primary_csv(tmp_path):
-    cmd = [
-        sys.executable,
-        "-m",
-        "frethmm.app.cli",
+def test_cli_run_classified_only_writes_primary_csv_and_manifest(tmp_path):
+    _run_cli(
         "run",
         "--files",
-        str(VALUES1_CSV),
+        str(SINGLE_TRACE),
         "--states",
         "2",
         "--mode",
         "single_channel",
+        "--n-init",
+        "1",
         "--classified-only",
         "--output-dir",
         str(tmp_path),
-    ]
-
-    completed = subprocess.run(
-        cmd,
-        cwd=REPO_ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
     )
 
-    assert "Values1_classified.csv" in completed.stdout
-    assert "Values1_summary.json" not in completed.stdout
-    assert (tmp_path / "Values1_classified.csv").exists()
-    assert not (tmp_path / "Values1_summary.json").exists()
-    assert not (tmp_path / "Values1report.dat").exists()
-    assert not (tmp_path / "Values1path.dat").exists()
-    assert not (tmp_path / "Values1dwell.dat").exists()
+    assert (tmp_path / "single_channel_trace_classified.csv").exists()
+    assert list(tmp_path.glob("frethmm_run_manifest_*.json"))
+    assert not (tmp_path / "single_channel_trace_summary.json").exists()
+    assert not (tmp_path / "single_channel_tracereport.dat").exists()
+    assert not (tmp_path / "single_channel_tracepath.dat").exists()
+    assert not (tmp_path / "single_channel_tracedwell.dat").exists()
 
 
-@pytest.mark.skipif(not VALUES1_CSV.exists(), reason="Values1 sample data not found")
 def test_cli_run_with_low_state_tail_trim_reports_trim_warning(tmp_path):
-    cmd = [
-        sys.executable,
-        "-m",
-        "frethmm.app.cli",
+    completed = _run_cli(
         "run",
         "--files",
-        str(VALUES1_CSV),
+        str(SINGLE_TRACE),
         "--states",
         "2",
         "--mode",
         "single_channel",
-        "--low-state-tail-trim-seconds",
+        "--n-init",
         "1",
+        "--guesses",
+        "0.2,0.8",
+        "--low-state-tail-trim-seconds",
+        "5",
         "--output-dir",
         str(tmp_path),
-    ]
-
-    completed = subprocess.run(
-        cmd,
-        cwd=REPO_ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
     )
 
-    assert "Applied low-state tail trim after 1s" in completed.stdout
-    assert (tmp_path / "Values1_classified.csv").exists()
-    assert (tmp_path / "Values1_summary.json").exists()
+    assert "Applied low-state tail trim after 5s" in completed.stdout
+    assert (tmp_path / "single_channel_trace_classified.csv").exists()
+    assert (tmp_path / "single_channel_trace_summary.json").exists()
+
+
+def test_cli_run_multistart_default_runs_without_error(tmp_path):
+    _run_cli(
+        "run",
+        "--files",
+        str(SINGLE_TRACE),
+        "--states",
+        "2",
+        "--mode",
+        "single_channel",
+        "--output-dir",
+        str(tmp_path),
+    )
+
+    summary_data = json.loads(
+        (tmp_path / "single_channel_trace_summary.json").read_text(encoding="utf-8")
+    )
+    assert summary_data["n_init"] == 10
+    assert "bic" in summary_data
+
+
+def test_cli_run_states_auto_selects_state_count(tmp_path):
+    _run_cli(
+        "run",
+        "--files",
+        str(SINGLE_TRACE),
+        "--states",
+        "auto",
+        "--mode",
+        "single_channel",
+        "--min-states",
+        "2",
+        "--max-states",
+        "3",
+        "--n-init",
+        "2",
+        "--output-dir",
+        str(tmp_path),
+    )
+
+    summary_data = json.loads(
+        (tmp_path / "single_channel_trace_summary.json").read_text(encoding="utf-8")
+    )
+    candidate_counts = sorted(c["n_states"] for c in summary_data["model_candidates"])
+    assert candidate_counts == [2, 3]

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal, Optional, Union
 
 import numpy as np
 
@@ -10,6 +10,15 @@ import numpy as np
 DEFAULT_MAX_ITER = 500
 DEFAULT_TOL = 1e-4
 DEFAULT_N_STATES = 2
+DEFAULT_N_INIT = 10
+DEFAULT_MIN_STATES = 2
+DEFAULT_MAX_STATES = 6
+
+# Sentinel accepted by ``ClassificationConfig.n_states`` to request BIC-based
+# state-count selection. Kept as a module constant so callers can compare
+# without relying on a magic string.
+AUTO_STATES = "auto"
+StateCount = Union[int, Literal["auto"]]
 
 
 @dataclass
@@ -33,7 +42,7 @@ class ExportOptions:
 
 @dataclass
 class ClassificationConfig:
-    n_states: int = DEFAULT_N_STATES
+    n_states: StateCount = DEFAULT_N_STATES
     max_iter: int = DEFAULT_MAX_ITER
     tol: float = DEFAULT_TOL
     guesses: Optional[list[float]] = None
@@ -41,13 +50,35 @@ class ClassificationConfig:
     data_mode: Literal["auto", "paired_channel", "single_channel"] = "auto"
     signal_column: int = 1
     low_state_tail_trim_seconds: Optional[float] = None
+    # Multi-start fitting: run Baum-Welch ``n_init`` times from different
+    # initial means and keep the best log-likelihood. ``1`` reproduces the
+    # historical single-fit behaviour exactly.
+    n_init: int = DEFAULT_N_INIT
+    # BIC model-selection range, consulted only when ``n_states == "auto"``.
+    min_states: int = DEFAULT_MIN_STATES
+    max_states: int = DEFAULT_MAX_STATES
 
     def __post_init__(self) -> None:
-        if self.n_states < 1:
-            raise ValueError(f"n_states must be >= 1, got {self.n_states}")
-        if self.guesses is not None and len(self.guesses) != self.n_states:
+        # Allow either a positive int or the "auto" sentinel.
+        if self.n_states != AUTO_STATES:
+            if not isinstance(self.n_states, int) or isinstance(self.n_states, bool):
+                raise TypeError(
+                    f"n_states must be a positive int or 'auto', got {self.n_states!r}"
+                )
+            if self.n_states < 1:
+                raise ValueError(f"n_states must be >= 1, got {self.n_states}")
+            if self.guesses is not None and len(self.guesses) != self.n_states:
+                raise ValueError(
+                    f"Expected {self.n_states} guesses, got {len(self.guesses)}"
+                )
+        if self.n_init < 1:
+            raise ValueError(f"n_init must be >= 1, got {self.n_init}")
+        if self.min_states < 1:
+            raise ValueError(f"min_states must be >= 1, got {self.min_states}")
+        if self.max_states < self.min_states:
             raise ValueError(
-                f"Expected {self.n_states} guesses, got {len(self.guesses)}"
+                "max_states must be >= min_states, "
+                f"got max_states={self.max_states}, min_states={self.min_states}"
             )
         if (
             self.low_state_tail_trim_seconds is not None
@@ -58,6 +89,10 @@ class ClassificationConfig:
                 f"got {self.low_state_tail_trim_seconds}"
             )
 
+    @property
+    def is_auto_states(self) -> bool:
+        return self.n_states == AUTO_STATES
+
     def default_state_means(
         self,
         data_min: float = 0.0,
@@ -65,7 +100,8 @@ class ClassificationConfig:
     ) -> np.ndarray:
         if self.guesses is not None:
             return np.array(self.guesses, dtype=np.float64)
-        return np.linspace(data_min, data_max, self.n_states + 2)[1:-1]
+        n_states = self._resolved_n_states()
+        return np.linspace(data_min, data_max, n_states + 2)[1:-1]
 
     def default_means(
         self,
@@ -73,6 +109,12 @@ class ClassificationConfig:
         data_max: float = 1.0,
     ) -> np.ndarray:
         return self.default_state_means(data_min, data_max)
+
+    def _resolved_n_states(self) -> int:
+        """Return an int state count, defaulting to ``min_states`` when auto."""
+        if self.n_states == AUTO_STATES:
+            return self.min_states
+        return int(self.n_states)
 
 @dataclass
 class SignalTrace:
@@ -121,6 +163,14 @@ class ClassificationResult:
     low_state_tail_trim_seconds: Optional[float] = None
     low_state_tail_cutoff_time: Optional[float] = None
     low_state_tail_kept_frames: Optional[int] = None
+    # Multi-start metadata (populated by the multi-start fitter).
+    n_init: Optional[int] = None
+    n_init_used: Optional[int] = None
+    best_start_index: Optional[int] = None
+    # Model-selection metadata (populated only when ``--states auto``).
+    bic: Optional[float] = None
+    aic: Optional[float] = None
+    model_candidates: Optional[list[dict]] = None
 
     @property
     def dwell_segments(self) -> np.ndarray:

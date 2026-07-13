@@ -1,0 +1,8 @@
+Number of states:  2    Max probability found:  -1e100
+State means:    0.1  0.9
+State sigma:  0.05    Signal sigma:  1.0
+Transition probability matrix:
+    0.1    0.1    1.0    0.0    0
+    0.1    0.9    0.0    0.0    0
+    0.9    0.1    0.0    0.0    0
+    0.9    0.9    1.0    0.0    0

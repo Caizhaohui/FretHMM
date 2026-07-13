@@ -13,7 +13,7 @@
 | 批量处理 | 多文件并行（`ProcessPoolExecutor`），支持目录扫描与多进程 |
 | Review Grid | 批量分类 + 分页多面板 PNG 可视化审查，快速筛查分类质量 |
 | 低态尾部裁剪 | 两遍 HMM 拟合，自动识别并裁剪持续低信号尾部（如光漂白态） |
-| CLI | `run`、`tdp`、`review-grid`、`gui` 四个子命令 |
+| CLI | `run`、`tdp`、`review-grid`、`events`、`dwell-stats`、`gui` 六个子命令 |
 | GUI | CustomTkinter 界面，深色/浅色主题，中英文切换，后台线程分析，支持批量 review grid 导出 |
 | 输出格式 | `*_classified.csv`、`*_summary.json`、`*report.dat`、`*path.dat`、`*dwell.dat`（GUI 可勾选） |
 | TDP | 转换密度图（Transition Density Plot）可视化 + 高斯速率拟合 |
@@ -47,7 +47,7 @@ pip install -e ".[gui]"    # 安装 PyInstaller 打包工具
 
 ### CLI
 
-FretHMM 提供四个子命令：`run`（HMM 分析）、`review-grid`（可视化审查）、`tdp`（转换密度图）、`gui`（图形界面）。
+FretHMM 提供六个子命令：`run`（HMM 分析）、`review-grid`（可视化审查）、`tdp`（转换密度图）、`events`（ON/OFF 事件分析）、`dwell-stats`（停留时间统计 + 速率拟合）、`gui`（图形界面）。
 
 #### run — HMM 状态分类
 
@@ -84,14 +84,17 @@ frethmm run --files data.csv --states 3 -v
 | `--files` | — | 指定一个或多个轨迹文件路径（与 `--input-dir` 二选一，必填） |
 | `--input-dir` | — | 指定输入目录，自动扫描其中所有轨迹文件（与 `--files` 二选一，必填） |
 | `--output-dir` | — | 输出目录（默认与输入文件同目录） |
-| `--states` | 2 | HMM 状态数 |
-| `--guesses` | 无 | 逗号分隔的初始信号猜测值，数量须与 `--states` 一致 |
+| `--states` | 2 | HMM 状态数，或填 `auto` 由 BIC 自动选择（详见[算法加固](#算法加固多次启动拟合--bic-模型选择)） |
+| `--guesses` | 无 | 逗号分隔的初始信号猜测值，数量须与 `--states` 一致（`--states auto` 时忽略） |
 | `--max-iter` | 500 | Baum-Welch 最大迭代次数 |
 | `--tol` | 1e-4 | 收敛容差 |
 | `--workers` | 1 | 并行工作进程数（>1 时启用多进程批处理） |
 | `--mode` | auto | 数据模式：`auto`（自动检测）/ `paired_channel`（双通道）/ `single_channel`（单通道） |
 | `--signal-column` | 1 | 单通道模式下选择的信号列索引（1-based，第 1 列为 Time 之后的列） |
 | `--low-state-tail-trim-seconds` | 无 | 低态尾部裁剪阈值（秒），启用两遍拟合（详见[数据过滤](#数据过滤低态尾部裁剪)） |
+| `--n-init` | 10 | 确定性多次启动 Baum-Welch 的次数，取对数似然最高的结果（填 `1` 可复现旧版单次拟合） |
+| `--min-states` | 2 | BIC 选择的最小状态数（仅 `--states auto` 时生效） |
+| `--max-states` | 6 | BIC 选择的最大状态数（仅 `--states auto` 时生效） |
 | `--classified-only` | 关闭 | 仅输出 `*_classified.csv`，不写出 `summary/report/path/dwell` |
 | `-v` / `--verbose` | 关闭 | 详细输出模式，显示所有警告 |
 
@@ -130,14 +133,17 @@ frethmm review-grid --input-dir ./traces/ --output review.png --states 2 \
 | `--input-dir` | — | 输入轨迹文件目录（必填） |
 | `--output` | — | 输出 PNG 路径（必填，如 `review.png`） |
 | `--output-dir` | 无 | 可选，用于存放 classified CSV 侧输出 |
-| `--states` | 2 | HMM 状态数 |
-| `--guesses` | 无 | 逗号分隔的初始信号猜测值 |
+| `--states` | 2 | HMM 状态数，或填 `auto` 由 BIC 自动选择 |
+| `--guesses` | 无 | 逗号分隔的初始信号猜测值（`--states auto` 时忽略） |
 | `--max-iter` | 500 | Baum-Welch 最大迭代次数 |
 | `--tol` | 1e-4 | 收敛容差 |
 | `--workers` | 1 | 并行工作进程数 |
 | `--mode` | auto | 数据模式：auto / paired_channel / single_channel |
 | `--signal-column` | 1 | 单通道模式下的信号列索引 |
 | `--low-state-tail-trim-seconds` | 无 | 低态尾部裁剪阈值（秒） |
+| `--n-init` | 10 | 确定性多次启动拟合次数（填 `1` 复现旧版单次拟合） |
+| `--min-states` | 2 | BIC 选择的最小状态数（仅 `--states auto` 时生效） |
+| `--max-states` | 6 | BIC 选择的最大状态数（仅 `--states auto` 时生效） |
 | `--rows` | 4 | 每页面板行数 |
 | `--cols` | 4 | 每行面板数 |
 
@@ -164,6 +170,73 @@ frethmm tdp --input-dir ./results/ --exposure 0.1 --states 3 --output tdp.png
 | `--exposure` | 0.1 | 每帧曝光时间（秒），用于速率计算 |
 | `--states` | 无 | 仅显示前 N 个状态（按转移频次排序） |
 | `--output` | 无 | 输出图片路径（如 `tdp.png`），不指定则弹出交互窗口 |
+
+#### events — ON/OFF 事件分析
+
+从 `*_classified.csv`（`run` 的主输出）中提取离散的 ON/OFF 事件。**最高均值态视为 ON，其余所有态视为 OFF** —— 对 2 态轨迹即自然的"高值 = ON"规则，对 3 态及以上则推广为"仅最高态算 ON"。末尾较长的 OFF 段（如光漂白尾部）会被标记为 `excluded`，不纳入停留时间统计，但仍会列在输出中以便审计。
+
+```bash
+# 批量：扫描目录中的所有 *_classified.csv
+frethmm events --input-dir ./results/ --output-dir ./events/
+
+# 处理指定文件
+frethmm events --files trace1_classified.csv trace2_classified.csv --output-dir ./events/
+
+# 调整末尾 OFF 排除阈值（默认 100 秒）
+frethmm events --input-dir ./results/ --tail-off-threshold-seconds 250 --output-dir ./events/
+```
+
+**`events` 子命令参数：**
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--input-dir` | — | 含 `*_classified.csv` 的目录（与 `--files` 二选一，必填） |
+| `--files` | — | 单个或多个 `*_classified.csv` 路径（与 `--input-dir` 二选一，必填） |
+| `--output-dir` | — | 输出目录（必填） |
+| `--tail-off-threshold-seconds` | 100.0 | 末尾事件为 OFF 且持续至少该秒数时排除 |
+
+每次运行写出三张 CSV 表：
+
+| 文件 | 说明 |
+|------|------|
+| `event_details.csv` | 每个事件一行：源文件、类型（ON/OFF）、序号、状态值、起止时间与帧、时长、是否排除 |
+| `event_summary.csv` | 每个源文件一行：ON/OFF 计数、总时长与平均停留时间、末尾 OFF 排除状态 |
+| `event_stats_overall.csv` | 跨文件汇总：事件计数、总/平均 ON 与 OFF 时长 |
+
+#### dwell-stats — 停留时间统计 + 速率常数拟合
+
+消费 `events` 产出的 `event_details.csv`，计算单分子分析所需的更深入描述性统计：ON/OFF 停留时间的中位数、标准差、min/max、25/75 百分位（跨所有分子汇总）。可选地对每个停留时间分布拟合单指数 `A·exp(-k·t)`（直方图 + `scipy.optimize.curve_fit`，约束 `k ≥ 0`），报告速率常数 `k` 及其对应的平均停留时间 `1/k`。
+
+**速率常数的物理含义：** `on_rate_constant` 是**离开 ON 态**的速率（≈ 结合/解离动力学中的 `k_off`），`off_rate_constant` 是**离开 OFF 态**的速率（≈ `k_on`）。
+
+```bash
+# 默认：描述性统计 + 指数拟合，消费 events 输出
+frethmm dwell-stats --input ./events/event_details.csv --output-dir ./stats/
+
+# 只要描述性统计（跳过拟合）
+frethmm dwell-stats --input ./events/event_details.csv --output-dir ./stats/ --no-fit
+
+# 自定义拟合直方图 bin 数
+frethmm dwell-stats --input ./events/event_details.csv --output-dir ./stats/ --bins 30
+```
+
+**`dwell-stats` 子命令参数：**
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--input` | — | `event_details.csv` 路径（`frethmm events` 的输出，必填） |
+| `--output-dir` | — | 输出目录（必填） |
+| `--bins` | 无 | 指数拟合的直方图 bin 数（默认 `max(10, n_events // 3)`） |
+| `--no-fit` | 关闭 | 跳过指数拟合，只输出描述性统计 |
+
+写出两张 CSV 表：
+
+| 文件 | 说明 |
+|------|------|
+| `dwell_stats_summary.csv` | 单行：汇总的 ON/OFF 计数、mean/median/std/min/max/p25/p75/total，以及拟合列（速率常数、标准差、平均时间、振幅、bin 数、是否收敛）—— `--no-fit` 或拟合失败时为空 |
+| `dwell_stats_per_file.csv` | 每个源文件一行：每个分子的扩展描述性统计（便于查看单分子差异） |
+
+> **拟合为空的情况：** 指数拟合要求每类至少 5 个停留样本且直方图呈衰减形态。停留时间恒定、事件过少或分布不衰减时速率列为空 —— 描述性统计仍然有效。
 
 #### gui — 图形界面
 
@@ -250,6 +323,39 @@ TDP（Transition Density Plot）从 HMM 分类生成的 `*report.dat` 文件中�
 **`--states N` 过滤**：当混合不同状态数的数据集时，可通过此参数仅保留每个分子中转移频次最高的 N 个状态，便于跨数据集对比。
 
 **速率分析**：除了可视化，FretHMM 还提供 `fit_gaussian_to_rates()` 编程接口，可对特定状态对之间的转移速率分布进行高斯拟合，提取平均速率和标准差。
+
+## 算法加固（多次启动拟合 + BIC 模型选择）
+
+Baum-Welch 对初始状态均值敏感，单次拟合容易陷入较差的局部最优。FretHMM 提供两项算法加固，让结果更稳定、更少依赖手动调参。
+
+### 多次启动拟合（`--n-init`）
+
+每次拟合时，FretHMM 会从**确定性**的初始均值出发，运行 `--n-init` 次（默认 10）Baum-Welch，并保留对数似然最高的结果。
+
+- 第 0 次启动始终使用旧版等距默认均值，因此 `--n-init 1` 可逐字节复现历史单次拟合结果。
+- 第 1..n-1 次启动在默认均值基础上叠加固定种子抖动（种子仅由配置决定，与墙钟时间无关），因此对同一输入的重复运行完全可复现。
+- 填 `--n-init 1` 可完全关闭多次启动（最快，等价于旧行为）。
+
+```bash
+# 默认 10 次启动（推荐，提升稳定性）
+frethmm run --files trace.csv --states 3
+
+# 复现旧版单次拟合
+frethmm run --files trace.csv --states 3 --n-init 1
+```
+
+### BIC 模型选择（`--states auto`）
+
+当你不知道状态数时，传入 `--states auto`，FretHMM 会在 `[--min-states, --max-states]`（默认 `2`..`6`）范围内扫描，对每个候选状态数执行完整的多次启动拟合，并选取 **贝叶斯信息准则（BIC）** 最小的一个（BIC = `k·ln(n) − 2·log_prob`，其中 `k` 是 tied 协方差高斯 HMM 的自由参数数，`n` 是帧数）。
+
+```bash
+# 在 2..5 个状态范围内用 BIC 自动选择状态数
+frethmm run --input-dir ./traces/ --states auto --min-states 2 --max-states 5 --workers 4
+```
+
+启用自动选择时，`*_summary.json` 会记录所选的 BIC、AIC，以及一个 `model_candidates` 表，列出每个候选的 `n_states` / `log_prob` / `bic` / `aic`，便于审计决策过程。
+
+> **关于 `--guesses` 的说明：** `--states auto` 下初始猜测被忽略，因为每个候选的状态数不同；改由多次启动提供初始化多样性。
 
 ## 数据过滤
 
@@ -360,7 +466,7 @@ FretHMM/
 ├── frethmm/
 │   ├── __init__.py              # 版本信息
 │   ├── app/
-│   │   ├── cli.py               # CLI 入口（run / tdp / review-grid / gui）
+│   │   ├── cli.py               # CLI 入口（run / tdp / review-grid / events / gui）
 │   │   ├── gui.py               # CustomTkinter GUI
 │   │   └── i18n.py              # 国际化（英文 / 中文，138 个翻译键）
 │   ├── assets/
@@ -415,6 +521,37 @@ python build_exe.py --onefile
 构建产物为独立的 Windows GUI 可执行文件，无需 Python 环境。单文件模式体积较大但便于分发。
 
 ## 更新日志
+
+### v1.4.0 (2026-06-22)
+
+停留时间统计与速率常数拟合：
+
+- **新增 `dwell-stats` 子命令**：消费 `event_details.csv`（`events` 的输出），写出 `dwell_stats_summary.csv` + `dwell_stats_per_file.csv`，含 ON/OFF 停留时间的扩展描述性统计（中位数、标准差、min/max、p25/p75）。
+- **指数速率常数拟合**：对汇总的停留时间直方图做单指数 `A·exp(-k·t)` 拟合（直方图 + `scipy.optimize.curve_fit`，约束 `k ≥ 0`），报告 ON/OFF 的速率常数及对应平均停留时间。可用 `--no-fit` 跳过。
+- **新增模块**：`frethmm/core/dwell_stats.py`（`describe_durations`、`fit_exponential_dwell`、扩展汇总）与 `frethmm/formats/event_details_parser.py`（反解析 `event_details.csv`）。
+- **无回归**：`events` 命令与 `events.py` 不变；`dwell-stats` 是纯下游消费者。
+- **测试**：新增 `test_dwell_stats.py`（12 项）与 `test_dwell_stats_cli.py`（3 项端到端），均自包含。
+
+### v1.3.0 (2026-06-15)
+
+ON/OFF 事件分析收编进包：
+
+- **新增 `events` 子命令**：从 `*_classified.csv` 提取 ON/OFF 事件，写出 `event_details.csv`、`event_summary.csv`、`event_stats_overall.csv` 三张表。
+- **N 态推广**：最高均值态 = ON，其余态 = OFF（2 态时与旧版"高值 = ON"规则完全一致）。
+- **末尾 OFF 排除**：末尾较长的 OFF 段（默认 ≥ 100 秒）标记为 `excluded`，不纳入停留时间统计但仍列出。
+- **新增模块**：`frethmm/core/events.py`（事件检测 + 汇总）、`frethmm/formats/classified_parser.py`（反解析 `*_classified.csv`）、`frethmm/core/io.py` 中的 `find_classified_files`。
+- **测试**：新增 `test_events.py`、`test_classified_parser.py`、`test_events_cli.py`，均使用自包含合成轨迹（不依赖外部样本）。
+
+### v1.2.0 (2026-06-15)
+
+算法加固 —— 多次启动拟合与基于 BIC 的状态数选择：
+
+- **多次启动拟合**（`--n-init`，默认 10）：确定性的多次启动 Baum-Welch，保留对数似然最高的结果。第 0 次启动复现旧版单次拟合，因此 `--n-init 1` 与 v1.1 逐字节兼容。
+- **BIC 模型选择**（`--states auto` 配合 `--min-states`/`--max-states`）：扫描状态数范围，对每个候选用多次启动拟合，选取 BIC 最小者。
+- **新增 metrics 模块**（`frethmm.core.metrics`）：`compute_aic`、`compute_bic`、`count_gaussian_hmm_params`。
+- **summary JSON**：当多次启动或自动选择启用时记录 `n_init`、`best_start_index`、`bic`、`aic`、`model_candidates`（旧版单次拟合不写入这些字段，保持字节兼容）。
+- **GUI**：参数区新增 "自动选择状态数 (BIC)" 复选框及最小/最大状态范围，并新增 `n_init` 输入框；参数对话框与文件夹批处理任务均支持自动选择。
+- **测试**：新增 `test_multistart.py` 与 `test_model_selection.py`（含合成轨迹夹具）；golden 测试固定 `--n-init 1` 以保持字节级回归。
 
 ### v1.1.0 (2026-06-09)
 

@@ -67,6 +67,10 @@ class _FolderBatchJob:
     data_mode: str
     signal_column: int
     guesses_text: str = ""
+    auto_states: bool = False
+    n_init: int = 10
+    min_states: int = 2
+    max_states: int = 6
 
 
 class _Msg:
@@ -286,6 +290,10 @@ class _App:
         self._export_path_var = tk.BooleanVar(value=False)
         self._export_dwell_var = tk.BooleanVar(value=False)
         self._low_state_tail_trim_var = tk.StringVar(value="")
+        self._auto_states_var = tk.BooleanVar(value=False)
+        self._n_init_var = tk.IntVar(value=10)
+        self._min_states_var = tk.IntVar(value=2)
+        self._max_states_var = tk.IntVar(value=6)
         self._review_rows_var = tk.IntVar(value=4)
         self._review_cols_var = tk.IntVar(value=8)
         self._review_output_var = tk.StringVar(value="review_grid.png")
@@ -353,20 +361,19 @@ class _App:
         self._runtime_toggle_btn.pack(side=tk.RIGHT, padx=(0, 8))
 
         self._build_files_section(left_panel)
-        self._build_folder_jobs_section(left_panel)
 
         params_output_row = ctk.CTkFrame(left_panel, fg_color="transparent")
         params_output_row.pack(fill=tk.X, pady=(0, 8))
-        params_output_row.grid_columnconfigure(0, weight=1)
-        params_output_row.grid_columnconfigure(1, weight=1)
+        params_output_row.grid_columnconfigure(0, weight=3)
+        params_output_row.grid_columnconfigure(1, weight=2)
 
         self._build_params_section(params_output_row, column=0, padx=(0, 4))
         self._build_output_section(params_output_row, column=1, padx=(4, 0))
 
         action_review_row = ctk.CTkFrame(left_panel, fg_color="transparent")
         action_review_row.pack(fill=tk.X, pady=(0, 8))
-        action_review_row.grid_columnconfigure(0, weight=1)
-        action_review_row.grid_columnconfigure(1, weight=1)
+        action_review_row.grid_columnconfigure(0, weight=3)
+        action_review_row.grid_columnconfigure(1, weight=2)
 
         self._build_review_grid_section(action_review_row, column=0, padx=(0, 4))
         self._build_action_section(action_review_row, column=1, padx=(4, 0))
@@ -376,6 +383,7 @@ class _App:
         self._build_result_summary_panel(self._right_frame)
         self._hide_runtime_panel()
         self._update_mode_controls()
+        self._on_auto_states_changed()
 
         # Update styling colors for the first time
         self._update_component_colors()
@@ -487,7 +495,7 @@ class _App:
         scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL)
         self._file_listbox = tk.Listbox(
             list_frame,
-            height=4,
+            height=6,
             selectmode=tk.EXTENDED,
             yscrollcommand=scrollbar.set,
             font=self.fonts["entry"],
@@ -579,16 +587,49 @@ class _App:
         row1.pack(fill=tk.X, pady=3, padx=10)
         self._lbl_states = ctk.CTkLabel(row1, text=self._t("label_states"))
         self._lbl_states.pack(side=tk.LEFT)
-        
+
         self._states_var = tk.IntVar(value=2)
         self._states_entry = ctk.CTkEntry(row1, textvariable=self._states_var, width=50)
         self._states_entry.pack(side=tk.LEFT, padx=(4, 16))
-        
+
         self._lbl_guesses = ctk.CTkLabel(row1, text=self._t("label_guesses"))
         self._lbl_guesses.pack(side=tk.LEFT)
         self._guesses_var = tk.StringVar()
         self._guesses_entry = ctk.CTkEntry(row1, textvariable=self._guesses_var, width=150)
         self._guesses_entry.pack(side=tk.LEFT, padx=(4, 0))
+
+        # Auto-select (BIC) checkbox + min/max range, controlling whether the
+        # States entry above is used or overridden by BIC model selection.
+        auto_row = ctk.CTkFrame(self._param_frame, fg_color="transparent")
+        auto_row.pack(fill=tk.X, pady=3, padx=10)
+        self._chk_auto_states = ctk.CTkCheckBox(
+            auto_row,
+            text=self._t("label_auto_states"),
+            variable=self._auto_states_var,
+            command=self._on_auto_states_changed,
+        )
+        self._chk_auto_states.pack(side=tk.LEFT, padx=(0, 12))
+
+        self._lbl_min_states = ctk.CTkLabel(auto_row, text=self._t("label_min_states"))
+        self._lbl_min_states.pack(side=tk.LEFT)
+        self._min_states_entry = ctk.CTkEntry(
+            auto_row, textvariable=self._min_states_var, width=40
+        )
+        self._min_states_entry.pack(side=tk.LEFT, padx=(4, 12))
+
+        self._lbl_max_states = ctk.CTkLabel(auto_row, text=self._t("label_max_states"))
+        self._lbl_max_states.pack(side=tk.LEFT)
+        self._max_states_entry = ctk.CTkEntry(
+            auto_row, textvariable=self._max_states_var, width=40
+        )
+        self._max_states_entry.pack(side=tk.LEFT, padx=(4, 12))
+
+        self._lbl_n_init = ctk.CTkLabel(auto_row, text=self._t("label_n_init"))
+        self._lbl_n_init.pack(side=tk.LEFT)
+        self._n_init_entry = ctk.CTkEntry(
+            auto_row, textvariable=self._n_init_var, width=40
+        )
+        self._n_init_entry.pack(side=tk.LEFT, padx=(4, 0))
 
         row2 = ctk.CTkFrame(self._param_frame, fg_color="transparent")
         row2.pack(fill=tk.X, pady=3, padx=10)
@@ -614,7 +655,7 @@ class _App:
         row3.pack(fill=tk.X, pady=3, padx=10)
         self._lbl_mode = ctk.CTkLabel(row3, text=self._t("label_data_mode"))
         self._lbl_mode.pack(side=tk.LEFT)
-        self._mode_var = tk.StringVar(value="auto")
+        self._mode_var = tk.StringVar(value="single_channel")
         self._mode_combo = ctk.CTkComboBox(
             row3,
             variable=self._mode_var,
@@ -745,7 +786,7 @@ class _App:
         self._btn_export_classified.pack(side=tk.LEFT, padx=(0, 8))
         self._output_label = ctk.CTkLabel(
             out_row,
-            text=self._t("output_same_as_input"),
+            text=self._t("output_auto_folder"),
             text_color="#757575",
         )
         self._output_label.pack(side=tk.LEFT)
@@ -1137,15 +1178,6 @@ class _App:
         self._btn_clear.configure(text=self._t("btn_clear"))
         self._btn_remove.configure(text=self._t("btn_remove_selected"))
 
-        self._btn_add_state_folder.configure(text=self._t("btn_add_state_folder"))
-        self._btn_remove_state_folder.configure(text=self._t("btn_remove_state_folder"))
-        self._btn_clear_state_folders.configure(text=self._t("btn_clear_state_folders"))
-        self._folder_tree.heading("folder", text=self._t("col_folder"))
-        self._folder_tree.heading("states", text=self._t("col_states"))
-        self._folder_tree.heading("mode", text=self._t("col_mode"))
-        self._folder_tree.heading("signal_column", text=self._t("col_signal_column"))
-        self._folder_tree.heading("files", text=self._t("col_files"))
-
         self._lbl_states.configure(text=self._t("label_states"))
         self._lbl_guesses.configure(text=self._t("label_guesses"))
         self._lbl_iter.configure(text=self._t("label_max_iter"))
@@ -1153,6 +1185,10 @@ class _App:
         self._lbl_workers.configure(text=self._t("label_workers"))
         self._lbl_mode.configure(text=self._t("label_data_mode"))
         self._lbl_signal_column.configure(text=self._t("label_signal_column"))
+        self._chk_auto_states.configure(text=self._t("label_auto_states"))
+        self._lbl_min_states.configure(text=self._t("label_min_states"))
+        self._lbl_max_states.configure(text=self._t("label_max_states"))
+        self._lbl_n_init.configure(text=self._t("label_n_init"))
 
         self._output_options_label.configure(text=self._t("label_output_files"))
         self._chk_export_classified.configure(text=self._t("output_option_classified"))
@@ -1167,7 +1203,7 @@ class _App:
         self._btn_output_reset.configure(text=self._t("btn_output_reset"))
         self._btn_export_classified.configure(text=self._t("btn_export_classified"))
         if not self.output_dir:
-            self._output_label.configure(text=self._t("output_same_as_input"))
+            self._output_label.configure(text=self._t("output_auto_folder"))
 
         self._run_btn.configure(text=self._t("btn_run"))
         self._review_title_label.configure(text=self._t("section_review_grid"))
@@ -1240,7 +1276,7 @@ class _App:
     def _show_params_dialog(self) -> None:
         dlg = ctk.CTkToplevel(self.root)
         dlg.title(self._t("dlg_params_title"))
-        dlg.geometry("460x360")
+        dlg.geometry("460x520")
         dlg.resizable(False, False)
         dlg.transient(self.root)
         dlg.grab_set()
@@ -1248,8 +1284,8 @@ class _App:
         sw = dlg.winfo_screenwidth()
         sh = dlg.winfo_screenheight()
         x = (sw - 460) // 2
-        y = (sh - 360) // 2
-        dlg.geometry(f"460x360+{x}+{y}")
+        y = (sh - 520) // 2
+        dlg.geometry(f"460x520+{x}+{y}")
 
         frame = ctk.CTkFrame(dlg, corner_radius=0, fg_color="transparent")
         frame.pack(fill=tk.BOTH, expand=True, padding=20)
@@ -1314,6 +1350,40 @@ class _App:
             row=6, column=1, padx=(10, 0), pady=6, sticky=tk.W
         )
 
+        ctk.CTkLabel(frame, text=self._t("label_n_init")).grid(
+            row=7, column=0, sticky=tk.W, pady=6
+        )
+        n_init_var = tk.IntVar(value=self._n_init_var.get())
+        ctk.CTkEntry(frame, textvariable=n_init_var, width=80).grid(
+            row=7, column=1, padx=(10, 0), pady=6, sticky=tk.W
+        )
+
+        ctk.CTkLabel(frame, text=self._t("label_auto_states")).grid(
+            row=8, column=0, sticky=tk.W, pady=6
+        )
+        auto_states_var = tk.BooleanVar(value=self._auto_states_var.get())
+        ctk.CTkCheckBox(
+            frame,
+            text="",
+            variable=auto_states_var,
+        ).grid(row=8, column=1, padx=(10, 0), pady=6, sticky=tk.W)
+
+        ctk.CTkLabel(frame, text=self._t("label_min_states")).grid(
+            row=9, column=0, sticky=tk.W, pady=6
+        )
+        min_states_var = tk.IntVar(value=self._min_states_var.get())
+        ctk.CTkEntry(frame, textvariable=min_states_var, width=60).grid(
+            row=9, column=1, padx=(10, 0), pady=6, sticky=tk.W
+        )
+
+        ctk.CTkLabel(frame, text=self._t("label_max_states")).grid(
+            row=10, column=0, sticky=tk.W, pady=6
+        )
+        max_states_var = tk.IntVar(value=self._max_states_var.get())
+        ctk.CTkEntry(frame, textvariable=max_states_var, width=60).grid(
+            row=10, column=1, padx=(10, 0), pady=6, sticky=tk.W
+        )
+
         def apply():
             self._states_var.set(states_var.get())
             self._iter_var.set(iter_var.get())
@@ -1322,11 +1392,16 @@ class _App:
             self._mode_var.set(mode_var.get())
             self._signal_column_var.set(signal_column_var.get())
             self._guesses_var.set(guesses_var.get())
+            self._n_init_var.set(n_init_var.get())
+            self._auto_states_var.set(auto_states_var.get())
+            self._min_states_var.set(min_states_var.get())
+            self._max_states_var.set(max_states_var.get())
             self._update_mode_controls()
+            self._on_auto_states_changed()
             dlg.destroy()
 
         btn_frame = ctk.CTkFrame(frame, fg_color="transparent")
-        btn_frame.grid(row=7, column=0, columnspan=2, pady=(16, 0))
+        btn_frame.grid(row=11, column=0, columnspan=2, pady=(16, 0))
         ctk.CTkButton(btn_frame, text="OK", command=apply, width=90).pack(
             side=tk.LEFT, padx=6
         )
@@ -1416,6 +1491,7 @@ class _App:
 
     def _clear_files(self) -> None:
         self.selected_files.clear()
+        self.folder_jobs.clear()
         self._file_listbox.delete(0, tk.END)
         self._refresh_input_status()
 
@@ -1440,16 +1516,6 @@ class _App:
         if not folder:
             return
 
-        states = simpledialog.askinteger(
-            self._t("dlg_folder_states_title"),
-            self._t("dlg_folder_states_prompt"),
-            parent=self.root,
-            minvalue=1,
-            initialvalue=self._states_var.get(),
-        )
-        if states is None:
-            return
-
         from frethmm.core.io import find_trace_files
 
         folder_path = Path(folder)
@@ -1458,10 +1524,55 @@ class _App:
             self._log(self._t("msg_no_traces"), "warning")
             return
 
+        # Ask whether to use BIC auto-selection. If the user cancels, abort the
+        # whole add flow (consistent with the legacy states prompt returning None).
+        auto_states = messagebox.askyesno(
+            self._t("dlg_folder_auto_states_title"),
+            self._t("dlg_folder_auto_states_prompt"),
+        )
+
+        min_states = self._min_states_var.get()
+        max_states = self._max_states_var.get()
+        n_init = self._n_init_var.get()
+        states = 0
+        guesses_text = ""
+        if auto_states:
+            min_states = simpledialog.askinteger(
+                self._t("dlg_folder_min_states_title"),
+                self._t("dlg_folder_min_states_prompt"),
+                parent=self.root,
+                minvalue=1,
+                initialvalue=min_states,
+            )
+            if min_states is None:
+                return
+            max_states = simpledialog.askinteger(
+                self._t("dlg_folder_max_states_title"),
+                self._t("dlg_folder_max_states_prompt"),
+                parent=self.root,
+                minvalue=min_states,
+                initialvalue=max(max_states, min_states),
+            )
+            if max_states is None:
+                return
+        else:
+            states = simpledialog.askinteger(
+                self._t("dlg_folder_states_title"),
+                self._t("dlg_folder_states_prompt"),
+                parent=self.root,
+                minvalue=1,
+                initialvalue=self._states_var.get(),
+            )
+            if states is None:
+                return
+            guesses_text = self._guesses_var.get().strip()
+
         try:
             tol = self._parse_tol(self._tol_var.get())
             signal_column = self._signal_column_var.get()
             self._validate_signal_column(signal_column)
+            if n_init < 1:
+                raise ValueError(self._t("msg_invalid_n_init", v=n_init))
         except ValueError as e:
             messagebox.showerror(self._t("msg_invalid_params"), str(e))
             return
@@ -1482,16 +1593,21 @@ class _App:
             workers=self._workers_var.get(),
             data_mode=self._mode_var.get(),
             signal_column=signal_column,
-            guesses_text=self._guesses_var.get().strip(),
+            guesses_text=guesses_text,
+            auto_states=auto_states,
+            n_init=n_init,
+            min_states=min_states,
+            max_states=max_states,
         )
         self.folder_jobs.append(job)
+        states_display = "auto" if auto_states else str(states)
         self._folder_tree.insert(
             "",
             tk.END,
             iid=str(folder_path),
             values=(
                 folder_path.name,
-                job.n_states,
+                states_display,
                 job.data_mode,
                 job.signal_column,
                 len(found),
@@ -1513,18 +1629,18 @@ class _App:
 
     def _clear_folder_jobs(self) -> None:
         self.folder_jobs.clear()
-        for item in self._folder_tree.get_children():
-            self._folder_tree.delete(item)
+        if hasattr(self, "_folder_tree"):
+            for item in self._folder_tree.get_children():
+                self._folder_tree.delete(item)
         self._refresh_input_status()
 
     def _refresh_input_status(self) -> None:
         file_count = len(self.selected_files)
-        folder_count = len(self.folder_jobs)
-        if file_count or folder_count:
+        if file_count:
             self._set_status(
                 "status_inputs_selected",
                 files=file_count,
-                folders=folder_count,
+                folders=0,
             )
         else:
             self._set_status("status_ready")
@@ -1544,7 +1660,7 @@ class _App:
     def _reset_output(self) -> None:
         self.output_dir = None
         self._output_label.configure(
-            text=self._t("output_same_as_input"),
+            text=self._t("output_auto_folder"),
             text_color="#757575",
         )
         self._refresh_input_status()
@@ -1557,8 +1673,22 @@ class _App:
         source_path: Path,
         output_dir: Optional[str] = None,
     ) -> Path:
-        base_dir = Path(output_dir) if output_dir else source_path.parent
+        base_dir = Path(output_dir) if output_dir else self._default_output_dir_for_file(source_path)
         return base_dir / f"{source_path.stem}_classified.csv"
+
+    @staticmethod
+    def _default_output_dir_for_folder(folder_path: Path) -> Path:
+        """Default GUI output directory for an input folder.
+
+        By default the GUI writes next to the input folder, using a stable
+        ``<input_folder>_output`` suffix. This keeps generated artifacts out of
+        raw-data folders while preserving the custom-output-folder override.
+        """
+        return folder_path.parent / f"{folder_path.name}_output"
+
+    @classmethod
+    def _default_output_dir_for_file(cls, source_path: Path) -> Path:
+        return cls._default_output_dir_for_folder(source_path.parent)
 
     def _export_selected_classified(self) -> None:
         selected_path: Optional[str] = None
@@ -1605,6 +1735,17 @@ class _App:
         mode = self._mode_var.get()
         state = "normal" if mode in {"auto", "single_channel"} else "disabled"
         self._signal_entry.configure(state=state)
+
+    def _on_auto_states_changed(self) -> None:
+        """Toggle whether the fixed States entry or BIC range is active."""
+        auto = self._auto_states_var.get()
+        self._states_entry.configure(state="disabled" if auto else "normal")
+        range_state = "normal" if auto else "disabled"
+        for entry in (
+            self._min_states_entry,
+            self._max_states_entry,
+        ):
+            entry.configure(state=range_state)
 
     def _build_export_options(self):
         from frethmm.domain.models import ExportOptions
@@ -1656,10 +1797,36 @@ class _App:
 
         signal_column = self._signal_column_var.get()
         self._validate_signal_column(signal_column)
-        n_states = self._states_var.get()
-        guesses = self._parse_guesses(g_str, n_states)
+        n_init = self._n_init_var.get()
+        if n_init < 1:
+            raise ValueError(self._t("msg_invalid_n_init", v=n_init))
         low_state_tail_trim_seconds = self._parse_low_state_tail_trim_seconds()
 
+        if self._auto_states_var.get():
+            min_states = self._min_states_var.get()
+            max_states = self._max_states_var.get()
+            if min_states < 1:
+                raise ValueError(self._t("msg_invalid_min_states", v=min_states))
+            if max_states < min_states:
+                raise ValueError(
+                    self._t("msg_invalid_max_states", mn=min_states, mx=max_states)
+                )
+            return ClassificationConfig(
+                n_states="auto",
+                max_iter=self._iter_var.get(),
+                tol=tol,
+                guesses=None,
+                workers=self._workers_var.get(),
+                data_mode=self._mode_var.get(),
+                signal_column=signal_column,
+                low_state_tail_trim_seconds=low_state_tail_trim_seconds,
+                n_init=n_init,
+                min_states=min_states,
+                max_states=max_states,
+            )
+
+        n_states = self._states_var.get()
+        guesses = self._parse_guesses(g_str, n_states)
         return ClassificationConfig(
             n_states=n_states,
             max_iter=self._iter_var.get(),
@@ -1669,14 +1836,31 @@ class _App:
             data_mode=self._mode_var.get(),
             signal_column=signal_column,
             low_state_tail_trim_seconds=low_state_tail_trim_seconds,
+            n_init=n_init,
         )
 
     def _build_folder_job_config(self, job: _FolderBatchJob):
         from frethmm.domain.models import ClassificationConfig
 
         self._validate_signal_column(job.signal_column)
-        guesses = self._parse_guesses(job.guesses_text, job.n_states)
         low_state_tail_trim_seconds = self._parse_low_state_tail_trim_seconds()
+
+        if job.auto_states:
+            return ClassificationConfig(
+                n_states="auto",
+                max_iter=job.max_iter,
+                tol=job.tol,
+                guesses=None,
+                workers=job.workers,
+                data_mode=job.data_mode,
+                signal_column=job.signal_column,
+                low_state_tail_trim_seconds=low_state_tail_trim_seconds,
+                n_init=job.n_init,
+                min_states=job.min_states,
+                max_states=job.max_states,
+            )
+
+        guesses = self._parse_guesses(job.guesses_text, job.n_states)
         return ClassificationConfig(
             n_states=job.n_states,
             max_iter=job.max_iter,
@@ -1686,6 +1870,7 @@ class _App:
             data_mode=job.data_mode,
             signal_column=job.signal_column,
             low_state_tail_trim_seconds=low_state_tail_trim_seconds,
+            n_init=job.n_init,
         )
 
     def _build_tasks(self) -> list[dict[str, Any]]:
@@ -1698,12 +1883,18 @@ class _App:
             config = self._build_config()
             config_bytes = pickle.dumps(config)
             for path in self.selected_files:
+                source_path = Path(path)
+                task_output_dir = (
+                    self.output_dir
+                    if self.output_dir
+                    else str(self._default_output_dir_for_file(source_path))
+                )
                 tasks.append(
                     {
-                        "filepath": str(Path(path)),
+                        "filepath": str(source_path),
                         "config_bytes": config_bytes,
                         "export_options_bytes": export_options_bytes,
-                        "output_dir": self.output_dir,
+                        "output_dir": task_output_dir,
                     }
                 )
 
@@ -1721,9 +1912,11 @@ class _App:
                         "warning",
                     )
                     continue
-                job_output_dir = None
-                if self.output_dir:
-                    job_output_dir = str(Path(self.output_dir) / folder_path.name)
+                job_output_dir = (
+                    str(Path(self.output_dir) / folder_path.name)
+                    if self.output_dir
+                    else str(self._default_output_dir_for_folder(folder_path))
+                )
                 for path in files:
                     tasks.append(
                         {
@@ -1820,11 +2013,17 @@ class _App:
             config = self._build_config()
             config_bytes = pickle.dumps(config)
             for path in self.selected_files:
+                source_path = Path(path)
+                task_output_dir = (
+                    self.output_dir
+                    if self.output_dir
+                    else str(self._default_output_dir_for_file(source_path))
+                )
                 tasks.append(
                     {
-                        "filepath": str(Path(path)),
+                        "filepath": str(source_path),
                         "config_bytes": config_bytes,
-                        "output_dir": self.output_dir,
+                        "output_dir": task_output_dir,
                     }
                 )
 
@@ -1842,9 +2041,11 @@ class _App:
                         "warning",
                     )
                     continue
-                job_output_dir = None
-                if self.output_dir:
-                    job_output_dir = str(Path(self.output_dir) / folder_path.name)
+                job_output_dir = (
+                    str(Path(self.output_dir) / folder_path.name)
+                    if self.output_dir
+                    else str(self._default_output_dir_for_folder(folder_path))
+                )
                 for path in files:
                     tasks.append(
                         {
@@ -2146,6 +2347,9 @@ def run_gui() -> None:
 
 def main() -> None:
     multiprocessing.freeze_support()
+    if "--version" in sys.argv[1:]:
+        print(f"FretHMM {_VERSION}")
+        return
     run_gui()
 
 

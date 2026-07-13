@@ -13,7 +13,7 @@ A single-molecule time-series Hidden Markov Model (HMM) state classification too
 | Batch Processing | Multi-file parallel processing (`ProcessPoolExecutor`), directory scanning with multi-worker support |
 | Review Grid | Batch classification + paginated multi-panel PNG visual review for quick quality screening |
 | Low-State Tail Trimming | Two-pass HMM fitting that automatically identifies and trims persistent low-signal tails (e.g., photobleached states) |
-| CLI | Four subcommands: `run`, `tdp`, `review-grid`, `gui` |
+| CLI | Six subcommands: `run`, `tdp`, `review-grid`, `events`, `dwell-stats`, `gui` |
 | GUI | CustomTkinter interface with dark/light themes, English/Chinese switching, threaded background analysis, and batch review grid export |
 | Output Formats | `*_classified.csv`, `*_summary.json`, `*report.dat`, `*path.dat`, `*dwell.dat` (selectable in GUI) |
 | TDP | Transition Density Plot visualization + Gaussian rate fitting |
@@ -47,7 +47,7 @@ pip install -e ".[gui]"    # Install PyInstaller packaging tool
 
 ### CLI
 
-FretHMM provides four subcommands: `run` (HMM analysis), `review-grid` (visual review), `tdp` (transition density plot), and `gui` (graphical interface).
+FretHMM provides six subcommands: `run` (HMM analysis), `review-grid` (visual review), `tdp` (transition density plot), `events` (ON/OFF event analysis), `dwell-stats` (dwell-time statistics + rate-constant fit), and `gui` (graphical interface).
 
 #### run — HMM State Classification
 
@@ -84,14 +84,17 @@ frethmm run --files data.csv --states 3 -v
 | `--files` | — | One or more trace file paths (mutually exclusive with `--input-dir`, required) |
 | `--input-dir` | — | Input directory to scan for trace files (mutually exclusive with `--files`, required) |
 | `--output-dir` | — | Output directory (defaults to input file directory) |
-| `--states` | 2 | Number of HMM states |
-| `--guesses` | None | Comma-separated initial signal guesses; count must match `--states` |
+| `--states` | 2 | Number of HMM states, or `auto` to pick via BIC (see [Model selection](#algorithm-hardening-multi-start--bic-model-selection)) |
+| `--guesses` | None | Comma-separated initial signal guesses; count must match `--states` (ignored with `--states auto`) |
 | `--max-iter` | 500 | Maximum Baum-Welch iterations |
 | `--tol` | 1e-4 | Convergence tolerance |
 | `--workers` | 1 | Number of parallel workers (>1 enables multiprocessing) |
 | `--mode` | auto | Data mode: `auto` / `paired_channel` / `single_channel` |
 | `--signal-column` | 1 | 1-based signal column index after Time for single_channel mode |
 | `--low-state-tail-trim-seconds` | None | Low-state tail trim threshold in seconds (see [Data Filtering](#data-filtering-low-state-tail-trimming)) |
+| `--n-init` | 10 | Number of deterministic multi-start Baum-Welch runs; best log-likelihood wins (use `1` to reproduce the legacy single-fit) |
+| `--min-states` | 2 | Minimum state count for BIC selection (only with `--states auto`) |
+| `--max-states` | 6 | Maximum state count for BIC selection (only with `--states auto`) |
 | `--classified-only` | off | Output only `*_classified.csv`, skip summary/report/path/dwell |
 | `-v` / `--verbose` | off | Verbose output, show all warnings |
 
@@ -130,14 +133,17 @@ frethmm review-grid --input-dir ./traces/ --output review.png --states 2 \
 | `--input-dir` | — | Input trace file directory (required) |
 | `--output` | — | Output PNG path, e.g. `review.png` (required) |
 | `--output-dir` | None | Optional directory for classified CSV side outputs |
-| `--states` | 2 | Number of HMM states |
-| `--guesses` | None | Comma-separated initial signal guesses |
+| `--states` | 2 | Number of HMM states, or `auto` to pick via BIC |
+| `--guesses` | None | Comma-separated initial signal guesses (ignored with `--states auto`) |
 | `--max-iter` | 500 | Maximum Baum-Welch iterations |
 | `--tol` | 1e-4 | Convergence tolerance |
 | `--workers` | 1 | Number of parallel workers |
 | `--mode` | auto | Data mode: auto / paired_channel / single_channel |
 | `--signal-column` | 1 | Signal column index for single_channel mode |
 | `--low-state-tail-trim-seconds` | None | Low-state tail trim threshold in seconds |
+| `--n-init` | 10 | Deterministic multi-start count (use `1` for legacy single-fit) |
+| `--min-states` | 2 | Minimum state count for BIC selection (only with `--states auto`) |
+| `--max-states` | 6 | Maximum state count for BIC selection (only with `--states auto`) |
 | `--rows` | 4 | Panel rows per page |
 | `--cols` | 4 | Panels per row |
 
@@ -164,6 +170,73 @@ frethmm tdp --input-dir ./results/ --exposure 0.1 --states 3 --output tdp.png
 | `--exposure` | 0.1 | Frame exposure time in seconds, used for rate calculations |
 | `--states` | None | Show only top N states (sorted by transition frequency) |
 | `--output` | None | Output image path (e.g., `tdp.png`); opens interactive window if not specified |
+
+#### events — ON/OFF Event Analysis
+
+Extract discrete ON/OFF events from `*_classified.csv` files (the primary output of `run`). The highest-mean state is treated as **ON**; all other states are treated as **OFF** — for a 2-state trace this is the natural "high = ON" rule, and for 3+ states it generalises so that only the top state counts as ON. A long terminal OFF run (e.g., a photobleached tail) is flagged `excluded` and omitted from the dwell-time statistics while still being listed for transparency.
+
+```bash
+# Batch: scan a directory of *_classified.csv files
+frethmm events --input-dir ./results/ --output-dir ./events/
+
+# Process specific files
+frethmm events --files trace1_classified.csv trace2_classified.csv --output-dir ./events/
+
+# Adjust the terminal-OFF exclusion threshold (default: 100 seconds)
+frethmm events --input-dir ./results/ --tail-off-threshold-seconds 250 --output-dir ./events/
+```
+
+**`events` subcommand parameters:**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--input-dir` | — | Directory of `*_classified.csv` files (mutually exclusive with `--files`, required) |
+| `--files` | — | One or more `*_classified.csv` paths (mutually exclusive with `--input-dir`, required) |
+| `--output-dir` | — | Output directory (required) |
+| `--tail-off-threshold-seconds` | 100.0 | Exclude the final event when it is OFF and lasts at least this many seconds |
+
+Three CSV tables are written per run:
+
+| File | Description |
+|------|-------------|
+| `event_details.csv` | One row per event: source file, type (ON/OFF), index, state value, start/end time and frame, duration, excluded flag |
+| `event_summary.csv` | One row per source file: ON/OFF counts, total and mean dwell times, terminal-OFF exclusion status |
+| `event_stats_overall.csv` | Aggregate across all files: event counts, total/mean ON and OFF times |
+
+#### dwell-stats — Dwell-Time Statistics + Rate-Constant Fit
+
+Consumes the `event_details.csv` produced by `events` and computes the deeper descriptive statistics single-molecule analysis needs: median, standard deviation, min/max, and 25th/75th percentiles for ON and OFF dwell times, pooled across all molecules. Optionally fits a single exponential `A·exp(-k·t)` to each dwell-time distribution (histogram + `scipy.optimize.curve_fit`, bounded so `k ≥ 0`) and reports the rate constant `k` and its implied mean dwell time `1/k`.
+
+**Physical interpretation of the rate constants:** `on_rate_constant` is the rate of *leaving the ON state* (≈ `k_off` in binding/unbinding kinetics), and `off_rate_constant` is the rate of *leaving the OFF state* (≈ `k_on`).
+
+```bash
+# Default: descriptive stats + exponential fit, consuming events output
+frethmm dwell-stats --input ./events/event_details.csv --output-dir ./stats/
+
+# Descriptive statistics only (skip the fit)
+frethmm dwell-stats --input ./events/event_details.csv --output-dir ./stats/ --no-fit
+
+# Custom histogram bin count for the fit
+frethmm dwell-stats --input ./events/event_details.csv --output-dir ./stats/ --bins 30
+```
+
+**`dwell-stats` subcommand parameters:**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--input` | — | Path to `event_details.csv` (the output of `frethmm events`), required |
+| `--output-dir` | — | Output directory (required) |
+| `--bins` | None | Histogram bin count for the exponential fit (default: `max(10, n_events // 3)`) |
+| `--no-fit` | off | Skip the exponential fit; emit descriptive statistics only |
+
+Two CSV tables are written:
+
+| File | Description |
+|------|-------------|
+| `dwell_stats_summary.csv` | Single row: pooled ON/OFF counts, mean/median/std/min/max/p25/p75/total, plus fit columns (rate constant, std, mean time, amplitude, n_bins, converged) — blank under `--no-fit` or when the fit fails |
+| `dwell_stats_per_file.csv` | One row per source file: the extended descriptive block per molecule (for inspecting single-molecule variability) |
+
+> **When the fit is blank:** the exponential fit requires ≥ 5 dwell samples per type and a decay-shaped histogram. Constant dwell times, too few events, or a non-decaying distribution yield blank rate columns — the descriptive statistics remain valid.
 
 #### gui — Graphical Interface
 
@@ -246,6 +319,53 @@ TDP aggregates transition information from all molecules (via `*report.dat` file
 **`--states N` filtering**: When mixing datasets with different state counts, this parameter keeps only the top-N states per molecule (by total transition frequency) for cross-dataset comparison.
 
 **Rate analysis**: Beyond visualization, FretHMM provides a `fit_gaussian_to_rates()` programming interface for Gaussian fitting on transition rate distributions between specific state pairs, extracting mean rate and standard deviation.
+
+## Algorithm Hardening (Multi-start + BIC Model Selection)
+
+Baum-Welch is sensitive to the initial state means, so a single fit can land in a poor local optimum. FretHMM ships two algorithm-hardening features to make results more stable and less reliant on manual tuning.
+
+### Multi-start fitting (`--n-init`)
+
+For every fit, FretHMM runs Baum-Welch `--n-init` times (default 10) from **deterministic** initial means and keeps the result with the highest log-likelihood.
+
+- Start 0 always uses the legacy evenly-spaced default means, so `--n-init 1` reproduces the historical single-fit output exactly.
+- Starts 1..n-1 perturb the default means with fixed-seed jitter (the seed depends only on the configuration, never on wall-clock time), so repeated runs on the same input are byte-for-byte reproducible.
+- Use `--n-init 1` to opt out of multi-start entirely (fastest, legacy behaviour).
+
+```bash
+# Default 10 starts (recommended for stability)
+frethmm run --files trace.csv --states 3
+
+# Reproduce the legacy single-fit
+frethmm run --files trace.csv --states 3 --n-init 1
+```
+
+### BIC model selection (`--states auto`)
+
+When you don't know the state count, pass `--states auto` and FretHMM will scan the range `[--min-states, --max-states]` (default `2`..`6`), fit each candidate with the full multi-start procedure, and pick the one with the lowest **Bayesian Information Criterion** (BIC = `k·ln(n) − 2·log_prob`, where `k` is the free-parameter count of a tied-covariance Gaussian HMM and `n` is the number of frames).
+
+```bash
+# Auto-select the state count via BIC over 2..5 states
+frethmm run --input-dir ./traces/ --states auto --min-states 2 --max-states 5 --workers 4
+```
+
+When auto-selection runs, `*_summary.json` records the chosen BIC, AIC, and a `model_candidates` table listing every candidate's `n_states` / `log_prob` / `bic` / `aic` so you can audit the decision.
+
+```json
+{
+  "n_states": 3,
+  "bic": -12259.40,
+  "aic": -12330.18,
+  "n_init": 10,
+  "model_candidates": [
+    {"n_states": 2, "log_prob": 5000.1, "bic": -9800.2, "aic": -9870.5},
+    {"n_states": 3, "log_prob": 6193.8, "bic": -12259.4, "aic": -12330.2},
+    {"n_states": 4, "log_prob": 6195.0, "bic": -12240.8, "aic": -12320.1}
+  ]
+}
+```
+
+> **Note on `--guesses`:** initial guesses are ignored with `--states auto` because the per-candidate state count varies; multi-start provides the initialization diversity instead.
 
 ## Data Filtering
 
@@ -413,6 +533,37 @@ python build_exe.py --onefile
 The build produces a standalone Windows GUI executable — no Python installation required. Single-file mode has a larger size but is more convenient for distribution.
 
 ## Changelog
+
+### v1.4.0 (2026-06-22)
+
+Dwell-time statistics and rate-constant fitting:
+
+- **New `dwell-stats` subcommand**: consumes `event_details.csv` (output of `events`) and writes `dwell_stats_summary.csv` + `dwell_stats_per_file.csv` with extended descriptive statistics (median, std, min/max, p25/p75) for ON and OFF dwell times.
+- **Exponential rate-constant fit**: single-exponential `A·exp(-k·t)` fit of the pooled dwell-time histogram (histogram + `scipy.optimize.curve_fit`, bounded `k ≥ 0`), reporting the rate constant and implied mean dwell time for ON and OFF. Skippable via `--no-fit`.
+- **New modules**: `frethmm/core/dwell_stats.py` (`describe_durations`, `fit_exponential_dwell`, extended summaries) and `frethmm/formats/event_details_parser.py` (reverse-parse `event_details.csv`).
+- **No regression**: `events` command and `events.py` are untouched; `dwell-stats` is a pure downstream consumer.
+- **Tests**: new `test_dwell_stats.py` (12 tests) and `test_dwell_stats_cli.py` (3 end-to-end tests), all self-contained.
+
+### v1.3.0 (2026-06-15)
+
+ON/OFF event analysis brought in-package:
+
+- **New `events` subcommand**: extract ON/OFF events from `*_classified.csv` files and write `event_details.csv`, `event_summary.csv`, and `event_stats_overall.csv`.
+- **N-state generalisation**: the highest-mean state is ON, all others are OFF (2-state traces behave exactly like the legacy "high = ON" rule).
+- **Terminal-OFF exclusion**: a long final OFF run (default ≥ 100 s) is flagged `excluded` and omitted from dwell statistics while still listed.
+- **New modules**: `frethmm/core/events.py` (event detection + summaries), `frethmm/formats/classified_parser.py` (reverse-parse `*_classified.csv`), and `find_classified_files` in `frethmm/core/io.py`.
+- **Tests**: new `test_events.py`, `test_classified_parser.py`, and `test_events_cli.py` with self-contained synthetic traces (no external sample dependency).
+
+### v1.2.0 (2026-06-15)
+
+Algorithm hardening — multi-start fitting and BIC-based state-count selection:
+
+- **Multi-start fitting** (`--n-init`, default 10): deterministic multi-start Baum-Welch that keeps the best log-likelihood. Start 0 reproduces the legacy single-fit, so `--n-init 1` is byte-compatible with v1.1.
+- **BIC model selection** (`--states auto` with `--min-states`/`--max-states`): scan a state-count range, fit each candidate with multi-start, and pick the lowest BIC.
+- **New metrics module** (`frethmm.core.metrics`): `compute_aic`, `compute_bic`, `count_gaussian_hmm_params`.
+- **Summary JSON**: records `n_init`, `best_start_index`, `bic`, `aic`, and `model_candidates` when multi-start or auto-selection is active (omitted for single-start legacy runs).
+- **GUI**: new "Auto-select states (BIC)" checkbox with min/max range, plus an `n_init` field in the parameters panel and dialog; folder-batch jobs support auto-selection.
+- **Tests**: new `test_multistart.py` and `test_model_selection.py` with synthetic-trace fixtures; golden tests pinned to `--n-init 1` to preserve byte-exact regression.
 
 ### v1.1.0 (2026-06-09)
 

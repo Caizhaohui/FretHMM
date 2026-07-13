@@ -26,10 +26,16 @@ env/
 .coverage
 htmlcov/
 
-# Output
+# Output / local verification
 output/
 _values2_verify/
 _verify_legacy_split/
+tmp_*/
+tmp_*.csv
+tmp_*.json
+tmp_*.png
+_smoke_out/
+*.log
 
 # Logs
 logs/
@@ -39,3 +45,6 @@ review_grid.png
 
 # OS thumbnails
 desktop.ini
+
+# Local packaging leftovers
+*.zip
