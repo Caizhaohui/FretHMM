@@ -82,6 +82,7 @@ def _plot_review_page(
         sharex=False,
         sharey=False,
     )
+    fig.patch.set_facecolor("white")
 
     for ax, result in zip(axes.flat, results):
         if result.trace_time is not None and result.trace_signal is not None:
@@ -97,6 +98,7 @@ def _plot_review_page(
             signal = trace.signal
         classified = result.classified_signal
 
+        ax.set_facecolor("#EBEBEB")
         ax.plot(time, signal, color="#90A4AE", linewidth=0.9, alpha=0.9)
         ax.plot(time, classified, color="#D32F2F", linewidth=1.4)
 
@@ -106,13 +108,10 @@ def _plot_review_page(
             f"logP={result.log_prob:.1f} | means=[{means_text}]"
         )
         ax.set_title(title, fontsize=8)
-        ax.tick_params(axis="both", labelsize=7, length=2)
-        ax.grid(alpha=0.18, linewidth=0.5)
-
-        if result.warnings:
-            for spine in ax.spines.values():
-                spine.set_color("#F57C00")
-                spine.set_linewidth(1.5)
+        ax.tick_params(axis="both", labelsize=7, length=0, colors="#4D4D4D")
+        ax.grid(color="white", linewidth=1.0)
+        for spine in ax.spines.values():
+            spine.set_visible(False)
 
     for ax in axes.flat[total:]:
         ax.axis("off")

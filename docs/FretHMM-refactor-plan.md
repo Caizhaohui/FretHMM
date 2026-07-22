@@ -4,6 +4,12 @@ This document turns the current `pyHaMMy` prototype into an executable refactor 
 
 > **Status snapshot (v1.4.0, 2026-06):** Most Phase 0–3 product goals and the modular layout are **done**. Phase 4 multi-start + BIC is **done**; post-fit cleanup / preprocess / richer diagnostics remain **open**. Phase 5 interactive GUI preview is **open**. Phase 6 batch processing is largely **done**; experiment-level summary tables remain **open**. Phase 7 golden/synthetic tests for core CLI paths are largely **done**. Historical checkboxes below are kept for audit; prefer this snapshot over unchecked boxes when planning new work.
 
+> **Release readiness update:** v1.4.0 now has committed de-identified
+> regression fixtures, command-level run manifests, Windows CI, and a
+> checksum-bearing GUI bundle workflow. The remaining release action is a
+> reviewed commit/tag and release artifact upload; do not treat local `dist/`
+> files as a release until they are rebuilt from that tagged commit.
+
 Target product definition:
 
 - Input-first workflow for two-column single-molecule traces: `time, signal`

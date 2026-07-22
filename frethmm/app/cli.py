@@ -3,21 +3,77 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Sequence
 from dataclasses import asdict
 import sys
 from pathlib import Path
+from typing import Literal
 
 from frethmm import __version__
 from frethmm.core.batch import process_batch, process_files
 from frethmm.core.io import find_trace_files
 from frethmm.core.provenance import write_run_manifest
-from frethmm.domain.models import ClassificationConfig
+from frethmm.domain.models import ClassificationConfig, ClassificationResult
 
 
-def _parse_states(value: str):
+class ParsedArguments(argparse.Namespace):
+    command: str | None
+    states: int | Literal["auto"]
+    guesses: str | None
+    max_iter: int
+    tol: float
+    workers: int
+    mode: Literal["auto", "paired_channel", "single_channel"]
+    signal_column: int
+    low_state_tail_trim_seconds: float | None
+    n_init: int
+    min_states: int
+    max_states: int
+    classified_only: bool
+    verbose: bool
+    input_dir: str | None
+    files: list[str]
+    output_dir: str | None
+    input: str
+    output: str | None
+    exposure: float
+    rows: int
+    cols: int
+    tail_off_threshold_seconds: float
+    bins: int | None
+    no_fit: bool
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.command = None
+        self.states = 2
+        self.guesses = None
+        self.max_iter = 500
+        self.tol = 1e-4
+        self.workers = 1
+        self.mode = "single_channel"
+        self.signal_column = 1
+        self.low_state_tail_trim_seconds = 250.0
+        self.n_init = 10
+        self.min_states = 2
+        self.max_states = 6
+        self.classified_only = False
+        self.verbose = False
+        self.input_dir = None
+        self.files = []
+        self.output_dir = None
+        self.input = ""
+        self.output = None
+        self.exposure = 0.1
+        self.rows = 4
+        self.cols = 4
+        self.tail_off_threshold_seconds = 100.0
+        self.bins = None
+        self.no_fit = False
+
+
+def _parse_states(value: str) -> int | Literal["auto"]:
     """Parse ``--states``: ``"auto"`` triggers BIC model selection, else int."""
-    if value is None:
-        return 2
     text = str(value).strip().lower()
     if text == "auto":
         return "auto"
@@ -32,36 +88,36 @@ def _parse_states(value: str):
     return parsed
 
 
-def _add_fit_arguments(sub) -> None:
+def _add_fit_arguments(sub: argparse.ArgumentParser) -> None:
     """Shared HMM-fit arguments for ``run`` and ``review-grid``."""
-    sub.add_argument(
+    _ = sub.add_argument(
         "--states",
         type=_parse_states,
         default=2,
         help="Number of HMM states, or 'auto' to pick via BIC (default: 2)",
     )
-    sub.add_argument("--guesses", type=str, default=None, help="Comma-separated initial signal guesses")
-    sub.add_argument("--max-iter", type=int, default=500, help="Max Baum-Welch iterations (default: 500)")
-    sub.add_argument("--tol", type=float, default=1e-4, help="Convergence tolerance (default: 1e-4)")
-    sub.add_argument("--workers", type=int, default=1, help="Parallel workers for batch mode (default: 1)")
-    sub.add_argument("--mode", choices=["auto", "paired_channel", "single_channel"], default="auto")
-    sub.add_argument(
+    _ = sub.add_argument("--guesses", type=str, default=None, help="Comma-separated initial signal guesses")
+    _ = sub.add_argument("--max-iter", type=int, default=500, help="Max Baum-Welch iterations (default: 500)")
+    _ = sub.add_argument("--tol", type=float, default=1e-4, help="Convergence tolerance (default: 1e-4)")
+    _ = sub.add_argument("--workers", type=int, default=1, help="Parallel workers for batch mode (default: 1)")
+    _ = sub.add_argument("--mode", choices=["auto", "paired_channel", "single_channel"], default="single_channel")
+    _ = sub.add_argument(
         "--signal-column",
         type=int,
         default=1,
         help="1-based signal column index after Time for single_channel mode (default: 1)",
     )
-    sub.add_argument(
+    _ = sub.add_argument(
         "--low-state-tail-trim-seconds",
         type=float,
-        default=None,
+        default=250.0,
         help=(
-            "Optional trim duration in seconds. If set, FretHMM first classifies once, "
+            "Low-state trim duration in seconds (default: 250). FretHMM first classifies once, "
             "then trims raw data after the lowest state has persisted for this long, "
             "then classifies the trimmed raw data again."
         ),
     )
-    sub.add_argument(
+    _ = sub.add_argument(
         "--n-init",
         type=int,
         default=10,
@@ -70,13 +126,13 @@ def _add_fit_arguments(sub) -> None:
             "log-likelihood wins (default: 10, use 1 to reproduce legacy single-fit)"
         ),
     )
-    sub.add_argument(
+    _ = sub.add_argument(
         "--min-states",
         type=int,
         default=2,
         help="Minimum state count for BIC selection (only with --states auto, default: 2)",
     )
-    sub.add_argument(
+    _ = sub.add_argument(
         "--max-states",
         type=int,
         default=6,
@@ -89,44 +145,44 @@ def build_parser() -> argparse.ArgumentParser:
         prog="frethmm",
         description="FretHMM: Hidden Markov Model state classification for single-molecule trajectories",
     )
-    parser.add_argument("--version", action="version", version=f"FretHMM {__version__}")
+    _ = parser.add_argument("--version", action="version", version=f"FretHMM {__version__}")
     sub = parser.add_subparsers(dest="command", help="Available commands")
 
     run = sub.add_parser("run", help="Run HMM state classification on trace files")
     _add_fit_arguments(run)
-    run.add_argument(
+    _ = run.add_argument(
         "--classified-only",
         action="store_true",
         help="Write only *_classified.csv and skip summary/report/path/dwell outputs",
     )
-    run.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
+    _ = run.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
     inp = run.add_mutually_exclusive_group(required=True)
-    inp.add_argument("--input-dir", type=str, help="Directory of trace files")
-    inp.add_argument("--files", nargs="+", type=str, help="Individual trace files")
-    run.add_argument("--output-dir", type=str, default=None, help="Output directory")
+    _ = inp.add_argument("--input-dir", type=str, help="Directory of trace files")
+    _ = inp.add_argument("--files", nargs="+", type=str, help="Individual trace files")
+    _ = run.add_argument("--output-dir", type=str, default=None, help="Output directory")
 
     tdp = sub.add_parser("tdp", help="Launch the transition density plot workflow")
-    tdp.add_argument("--input-dir", type=str, required=True)
-    tdp.add_argument("--exposure", type=float, default=0.1)
-    tdp.add_argument("--states", type=int, default=None)
-    tdp.add_argument("--output", type=str, default=None)
+    _ = tdp.add_argument("--input-dir", type=str, required=True)
+    _ = tdp.add_argument("--exposure", type=float, default=0.1)
+    _ = tdp.add_argument("--states", type=int, default=None)
+    _ = tdp.add_argument("--output", type=str, default=None)
 
     review = sub.add_parser(
         "review-grid",
         help="Batch-classify traces and generate a visual review grid",
     )
-    review.add_argument("--input-dir", type=str, required=True, help="Directory of trace files")
-    review.add_argument("--output", type=str, required=True, help="Output PNG path for the review grid")
-    review.add_argument("--output-dir", type=str, default=None, help="Optional directory for classified CSV outputs")
+    _ = review.add_argument("--input-dir", type=str, required=True, help="Directory of trace files")
+    _ = review.add_argument("--output", type=str, required=True, help="Output PNG path for the review grid")
+    _ = review.add_argument("--output-dir", type=str, default=None, help="Optional directory for classified CSV outputs")
     _add_fit_arguments(review)
-    review.add_argument("--rows", type=int, default=4, help="Number of panel rows per review page")
-    review.add_argument("--cols", type=int, default=4, help="Number of panels per row in the review grid")
+    _ = review.add_argument("--rows", type=int, default=4, help="Number of panel rows per review page")
+    _ = review.add_argument("--cols", type=int, default=4, help="Number of panels per row in the review grid")
 
     events = sub.add_parser(
         "events",
         help="Extract ON/OFF events from *_classified.csv files",
     )
-    events.add_argument(
+    _ = events.add_argument(
         "--tail-off-threshold-seconds",
         type=float,
         default=100.0,
@@ -135,35 +191,35 @@ def build_parser() -> argparse.ArgumentParser:
             "many seconds (default: 100.0)"
         ),
     )
-    events.add_argument("--output-dir", type=str, required=True, help="Output directory")
+    _ = events.add_argument("--output-dir", type=str, required=True, help="Output directory")
     events_inp = events.add_mutually_exclusive_group(required=True)
-    events_inp.add_argument("--input-dir", type=str, help="Directory of *_classified.csv files")
-    events_inp.add_argument("--files", nargs="+", type=str, help="Individual *_classified.csv files")
+    _ = events_inp.add_argument("--input-dir", type=str, help="Directory of *_classified.csv files")
+    _ = events_inp.add_argument("--files", nargs="+", type=str, help="Individual *_classified.csv files")
 
     dwell = sub.add_parser(
         "dwell-stats",
         help="Descriptive dwell-time statistics + exponential rate-constant fit",
     )
-    dwell.add_argument("--input", type=str, required=True, help="Path to event_details.csv (output of `frethmm events`)")
-    dwell.add_argument("--output-dir", type=str, required=True, help="Output directory")
-    dwell.add_argument(
+    _ = dwell.add_argument("--input", type=str, required=True, help="Path to event_details.csv (output of `frethmm events`)")
+    _ = dwell.add_argument("--output-dir", type=str, required=True, help="Output directory")
+    _ = dwell.add_argument(
         "--bins",
         type=int,
         default=None,
         help="Histogram bin count for the exponential fit (default: max(10, n_events // 3))",
     )
-    dwell.add_argument(
+    _ = dwell.add_argument(
         "--no-fit",
         action="store_true",
         help="Skip the exponential fit; emit descriptive statistics only",
     )
 
-    sub.add_parser("gui", help="Launch the FretHMM GUI")
+    _ = sub.add_parser("gui", help="Launch the FretHMM GUI")
     return parser
 
 
 def _classification_output_paths(
-    results,
+    results: Sequence[ClassificationResult],
     output_dir: Path | None,
     *,
     classified_only: bool,
@@ -198,7 +254,7 @@ def _manifest_output_dir(
     return Path.cwd()
 
 
-def cmd_run(args: argparse.Namespace) -> None:
+def cmd_run(args: ParsedArguments) -> None:
     import warnings
 
     if args.verbose:
@@ -254,11 +310,10 @@ def cmd_run(args: argparse.Namespace) -> None:
     )
     print(f"\nDone. Processed {len(results)} file(s).")
     for result in results:
-        stem = result.filepath.stem if result.filepath else "output"
-        print(
-            f"  {result.filepath.name}: {result.n_states} states, "
-            f"log_prob={result.log_prob:.2f}, means={result.state_means}"
-        )
+        if result.filepath is None:
+            continue
+        stem = result.filepath.stem
+        print(f"  {result.filepath.name}: {result.n_states} states, log_prob={result.log_prob:.2f}, means={result.state_means}")
         if args.classified_only:
             print(f"    outputs: {stem}_classified.csv")
         else:
@@ -268,20 +323,24 @@ def cmd_run(args: argparse.Namespace) -> None:
     print(f"  run manifest: {manifest_path}")
 
 
-def cmd_tdp(args: argparse.Namespace) -> None:
+def cmd_tdp(args: ParsedArguments) -> None:
     from frethmm.viz.tdp import generate_tdp
 
+    if args.input_dir is None:
+        raise ValueError("tdp requires an input directory")
     generate_tdp(
         input_dir=Path(args.input_dir),
         exposure=args.exposure,
-        n_display_states=args.states,
+        n_display_states=args.states if isinstance(args.states, int) else None,
         output=args.output,
     )
 
 
-def cmd_review_grid(args: argparse.Namespace) -> None:
+def cmd_review_grid(args: ParsedArguments) -> None:
     from frethmm.viz.review_grid import generate_review_grid
 
+    if args.input_dir is None or args.output is None:
+        raise ValueError("review-grid requires input and output paths")
     guesses = [float(value) for value in args.guesses.split(",")] if args.guesses else None
     config = ClassificationConfig(
         n_states=args.states,
@@ -328,7 +387,7 @@ def cmd_review_grid(args: argparse.Namespace) -> None:
     print(f"  run manifest: {manifest_path}")
 
 
-def cmd_events(args: argparse.Namespace) -> None:
+def cmd_events(args: ParsedArguments) -> None:
     """Extract ON/OFF events from ``*_classified.csv`` files.
 
     Each classified file is reverse-parsed into a state path, segmented into
@@ -341,9 +400,14 @@ def cmd_events(args: argparse.Namespace) -> None:
     from frethmm.core.events import (
         DETAIL_FIELDS,
         SUMMARY_FIELDS,
+        STAGE_SUMMARY_FIELDS,
+        Event,
         event_to_detail_row,
         extract_events,
+        included_statistical_events,
         overall_fields,
+        summarize_stage_events,
+        summarize_stage_overall,
         summarize_events,
         summarize_overall,
     )
@@ -357,11 +421,14 @@ def cmd_events(args: argparse.Namespace) -> None:
     else:
         files = [Path(path) for path in args.files]
 
+    if args.output_dir is None:
+        raise ValueError("events requires an output directory")
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    all_events = []
-    per_file_summaries = []
+    all_events: list[Event] = []
+    per_file_summaries: list[dict[str, object]] = []
+    multistage_files = 0
     for path in files:
         try:
             state_path, state_means, times = read_classified_csv(path)
@@ -376,13 +443,30 @@ def cmd_events(args: argparse.Namespace) -> None:
             print(f"  ERROR {path.name}: {exc}")
             continue
         all_events.extend(events)
-        per_file_summaries.append(summarize_events(path.name, events))
+        if len(state_means) > 2:
+            multistage_files += 1
+            per_file_summaries.extend(summarize_stage_events(path.name, events))
+        else:
+            per_file_summaries.append(summarize_events(path.name, events))
         print(f"  {path.name}: {len(events)} event(s)")
 
     detail_rows = [event_to_detail_row(event) for event in all_events]
-    overall = summarize_overall(all_events, len(files))
+    multistage_output = multistage_files > 0
+    if multistage_output:
+        overall_rows = summarize_stage_overall(all_events, len(files))
+        binary_events = [event for event in all_events if event.stage_state_index < 0]
+        if binary_events:
+            binary_overall = summarize_overall(binary_events, len(files))
+            binary_overall.update({"stage_state_index": "", "stage_state_mean": "", "off_state_index": ""})
+            overall_rows.append(binary_overall)
+    else:
+        overall_rows = [summarize_overall(all_events, len(files))]
 
-    def _write_csv(filename: str, fieldnames: list[str], rows: list[dict]) -> None:
+    def _write_csv(
+        filename: str,
+        fieldnames: list[str],
+        rows: list[dict[str, object]],
+    ) -> None:
         out_path = output_dir / filename
         with out_path.open("w", encoding="utf-8", newline="") as handle:
             writer = csv_module.DictWriter(handle, fieldnames=fieldnames)
@@ -390,8 +474,9 @@ def cmd_events(args: argparse.Namespace) -> None:
             writer.writerows(rows)
 
     _write_csv("event_details.csv", DETAIL_FIELDS, detail_rows)
-    _write_csv("event_summary.csv", SUMMARY_FIELDS, per_file_summaries)
-    _write_csv("event_stats_overall.csv", overall_fields(overall), [overall])
+    summary_fields = STAGE_SUMMARY_FIELDS if multistage_output else SUMMARY_FIELDS
+    _write_csv("event_summary.csv", summary_fields, per_file_summaries)
+    _write_csv("event_stats_overall.csv", overall_fields(overall_rows[0]), overall_rows)
 
     print(f"\nProcessed {len(files)} file(s).")
     print(f"Wrote {len(detail_rows)} event rows to {output_dir / 'event_details.csv'}")
@@ -411,7 +496,7 @@ def cmd_events(args: argparse.Namespace) -> None:
     print(f"Run manifest: {manifest_path}")
 
 
-def cmd_dwell_stats(args: argparse.Namespace) -> None:
+def cmd_dwell_stats(args: ParsedArguments) -> None:
     """Descriptive dwell-time statistics + optional exponential rate-constant fit.
 
     Consumes an ``event_details.csv`` (the per-event output of ``frethmm
@@ -423,43 +508,64 @@ def cmd_dwell_stats(args: argparse.Namespace) -> None:
     import csv as csv_module
 
     from frethmm.core.dwell_stats import (
-        describe_durations,
         fit_dict_to_columns,
         fit_exponential_dwell,
         summarize_events_extended,
         summarize_overall_extended,
     )
     from frethmm.formats.event_details_parser import read_event_details
+    from frethmm.core.events import included_statistical_events
 
     events = read_event_details(Path(args.input))
     if not events:
         raise SystemExit(f"No events found in {args.input}")
 
-    included = [event for event in events if not event.excluded]
+    included = included_statistical_events(events)
     on_durations = [e.duration_seconds for e in included if e.event_type == "ON"]
     off_durations = [e.duration_seconds for e in included if e.event_type == "OFF"]
 
     source_files = {event.source_file for event in events}
-    overall = summarize_overall_extended(events, len(source_files))
-    # Carry the raw counts the extended summary does not expose directly.
-    overall["file_count"] = len(source_files)
-    overall["total_events"] = len(events)
-    overall["included_events"] = len(included)
+    multistage_output = any(event.stage_state_index >= 0 for event in events)
+    stage_indices = sorted({event.stage_state_index for event in events}) if multistage_output else [-1]
+    overall_rows: list[dict[str, object]] = []
+    per_file_rows: list[dict[str, object]] = []
+    for stage_index in stage_indices:
+        stage_events = [event for event in events if event.stage_state_index == stage_index]
+        stage_included = included_statistical_events(stage_events)
+        stage_on = [event.duration_seconds for event in stage_included if event.event_type == "ON"]
+        stage_off = [event.duration_seconds for event in stage_included if event.event_type == "OFF"]
+        overall = summarize_overall_extended(stage_events, len(source_files))
+        overall["file_count"] = len(source_files)
+        overall["total_events"] = len(stage_events)
+        overall["included_events"] = len(stage_included)
+        if multistage_output:
+            representative = stage_events[0]
+            overall.update({
+                "stage_state_index": stage_index if stage_index >= 0 else "",
+                "stage_state_mean": round(representative.stage_state_mean, 6) if stage_index >= 0 else "",
+                "off_state_index": representative.off_state_index if stage_index >= 0 else "",
+            })
+        on_fit = fit_exponential_dwell(stage_on, n_bins=args.bins) if not args.no_fit else None
+        off_fit = fit_exponential_dwell(stage_off, n_bins=args.bins) if not args.no_fit else None
+        overall.update(fit_dict_to_columns(on_fit, prefix="on"))
+        overall.update(fit_dict_to_columns(off_fit, prefix="off"))
+        overall_rows.append(overall)
+        for source in sorted(source_files):
+            file_events = [event for event in stage_events if event.source_file == source]
+            if not file_events:
+                continue
+            row = summarize_events_extended(source, file_events)
+            if multistage_output:
+                representative = file_events[0]
+                row.update({
+                    "stage_state_index": stage_index if stage_index >= 0 else "",
+                    "stage_state_mean": round(representative.stage_state_mean, 6) if stage_index >= 0 else "",
+                    "off_state_index": representative.off_state_index if stage_index >= 0 else "",
+                })
+            per_file_rows.append(row)
 
-    if not args.no_fit:
-        on_fit = fit_exponential_dwell(on_durations, n_bins=args.bins)
-        off_fit = fit_exponential_dwell(off_durations, n_bins=args.bins)
-    else:
-        on_fit = off_fit = None
-    overall.update(fit_dict_to_columns(on_fit, prefix="on"))
-    overall.update(fit_dict_to_columns(off_fit, prefix="off"))
-
-    # Per-file breakdown (one row per source file), descriptive only.
-    per_file_rows = []
-    for source in sorted(source_files):
-        file_events = [e for e in events if e.source_file == source]
-        per_file_rows.append(summarize_events_extended(source, file_events))
-
+    if args.output_dir is None:
+        raise ValueError("dwell-stats requires an output directory")
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -467,9 +573,10 @@ def cmd_dwell_stats(args: argparse.Namespace) -> None:
     per_file_path = output_dir / "dwell_stats_per_file.csv"
 
     with summary_path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv_module.DictWriter(handle, fieldnames=list(overall.keys()))
+        fieldnames: list[str] = list(overall_rows[0].keys())
+        writer = csv_module.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
-        writer.writerow(overall)
+        writer.writerows(overall_rows)
 
     with per_file_path.open("w", encoding="utf-8", newline="") as handle:
         fieldnames = list(per_file_rows[0].keys()) if per_file_rows else []
@@ -479,16 +586,12 @@ def cmd_dwell_stats(args: argparse.Namespace) -> None:
 
     print(f"Read {len(events)} event(s) from {args.input} ({len(source_files)} file(s)).")
     print(
-        f"ON: {len(on_durations)} events, mean={overall['on_mean_seconds']}s; "
-        f"OFF: {len(off_durations)} events, mean={overall['off_mean_seconds']}s"
+        f"ON: {len(on_durations)} events; OFF: {len(off_durations)} events"
     )
     if not args.no_fit:
-        on_rate = overall["on_rate_constant"]
-        off_rate = overall["off_rate_constant"]
-        print(
-            f"Rate constants: on={on_rate} (leaves ON, ~k_off), "
-            f"off={off_rate} (leaves OFF, ~k_on)"
-        )
+        on_rate = overall_rows[0]["on_rate_constant"]
+        off_rate = overall_rows[0]["off_rate_constant"]
+        print(f"Rate constants: on={on_rate} (leaves ON, ~k_off), off={off_rate} (leaves OFF, ~k_on)")
     print(f"Wrote summary to {summary_path}")
     print(f"Wrote per-file breakdown to {per_file_path}")
     manifest_path = write_run_manifest(
@@ -501,15 +604,15 @@ def cmd_dwell_stats(args: argparse.Namespace) -> None:
     print(f"Run manifest: {manifest_path}")
 
 
-def cmd_gui(_args: argparse.Namespace) -> None:
+def cmd_gui(_args: ParsedArguments) -> None:
     from frethmm.app.gui import run_gui
 
     run_gui()
 
 
-def main() -> None:
+def main(argv: Sequence[str] | None = None) -> None:
     parser = build_parser()
-    args = parser.parse_args()
+    args = parser.parse_args(argv, namespace=ParsedArguments())
     if args.command is None:
         parser.print_help()
         sys.exit(1)

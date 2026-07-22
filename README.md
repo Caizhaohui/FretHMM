@@ -520,9 +520,27 @@ pip install -e ".[dev]"
 pytest tests/ -v
 ```
 
+## Reproducibility
+
+Each successful CLI analysis writes a timestamped
+`frethmm_run_manifest_*.json` next to its primary outputs. The manifest records
+the command, fit parameters, input/output file metadata, FretHMM version,
+Python version, and runtime dependency versions without copying experimental
+data. This also applies to `--classified-only`, which suppresses auxiliary
+classification exports but retains the run manifest.
+
+The committed fixtures under `tests/data/` are small, synthetic or
+de-identified CSV and legacy report samples. They are sufficient for the core
+regression suite and do not include raw images or ND2 files. FretHMM currently
+starts from exported trajectory files (`.csv`, `.dat`, `.txt`, `.tsv`); ND2
+image-to-trajectory processing remains an upstream workflow.
+
 ## Packaging as Executable
 
 ```bash
+# Install the explicit build dependency first
+pip install -e ".[gui]"
+
 # Directory mode (default, produces dist/FretHMM/ directory)
 python build_exe.py
 
@@ -530,11 +548,14 @@ python build_exe.py
 python build_exe.py --onefile
 ```
 
-The build produces a standalone Windows GUI executable — no Python installation required. Single-file mode has a larger size but is more convenient for distribution.
+The build produces a standalone Windows GUI executable — no Python installation
+required. Directory-mode builds also create `dist/FretHMM.zip`, a SHA-256
+sidecar, and a JSON release manifest. Validate a built executable without
+launching its UI with `dist/FretHMM/FretHMM.exe --version`.
 
 ## Changelog
 
-### v1.4.0 (2026-06-22)
+### v1.4.0 (release candidate)
 
 Dwell-time statistics and rate-constant fitting:
 
@@ -543,6 +564,8 @@ Dwell-time statistics and rate-constant fitting:
 - **New modules**: `frethmm/core/dwell_stats.py` (`describe_durations`, `fit_exponential_dwell`, extended summaries) and `frethmm/formats/event_details_parser.py` (reverse-parse `event_details.csv`).
 - **No regression**: `events` command and `events.py` are untouched; `dwell-stats` is a pure downstream consumer.
 - **Tests**: new `test_dwell_stats.py` (12 tests) and `test_dwell_stats_cli.py` (3 end-to-end tests), all self-contained.
+- **Release reproducibility**: CLI analysis commands now emit a timestamped run manifest; committed de-identified fixtures replace workspace-dependent skipped regression tests; Windows CI builds and version-smoke-tests the GUI bundle.
+- **Tail trimming correction**: low-state trimming applies only to a persistent terminal low state, avoiding accidental removal of valid low-state segments in the middle of a trace.
 
 ### v1.3.0 (2026-06-15)
 

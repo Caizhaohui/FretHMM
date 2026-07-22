@@ -8,6 +8,7 @@ assert on the two output tables. No external sample dependency.
 from __future__ import annotations
 
 import csv
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -85,6 +86,11 @@ def test_cli_dwell_stats_consumes_events_output(tmp_path):
     assert "on_rate_constant" in row
     assert row["on_rate_constant"] != ""
     assert "Rate constants:" in completed.stdout
+    manifests = list(out_dir.glob("frethmm_run_manifest_*.json"))
+    assert len(manifests) == 1
+    manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
+    assert manifest["command"] == "dwell-stats"
+    assert manifest["inputs"][0]["name"] == "event_details.csv"
 
 
 def test_cli_dwell_stats_no_fit_blanks_rate_columns(tmp_path):

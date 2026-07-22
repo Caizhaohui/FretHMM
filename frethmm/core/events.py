@@ -7,12 +7,11 @@ dwell-time analysis. It is the in-package successor to the standalone
 
 State semantics
 ---------------
-A trace may have any number of states. Exactly one state is labelled **ON**:
-the state with the highest mean (``argmax(state_means)``). Every other state —
-no matter how many — is labelled **OFF**. For a 2-state trace this reproduces
-the legacy "high value = ON" rule exactly; for 3+ states it generalises it so
-that, e.g., a 3-state FRET trace with means ``[0.2, 0.5, 0.9]`` treats only the
-``0.9`` state as ON and both lower states as OFF.
+A two-state trace uses the legacy high=ON, low=OFF rule. For three or more
+states, every non-lowest state defines an independent stage. A descent through
+one or more lower states is OFF when it later returns to the original stage,
+regardless of duration. The classified HMM path, rather than the raw
+fluorescence, is the sole source of event boundaries.
 
 Tail-off exclusion
 -------------------
@@ -26,9 +25,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from statistics import mean
-from typing import Optional
+from typing import TypeAlias
 
 import numpy as np
+import numpy.typing as npt
+
+
+FloatArray: TypeAlias = npt.NDArray[np.float64]
+IntArray: TypeAlias = npt.NDArray[np.int64]
 
 
 @dataclass
@@ -47,9 +51,13 @@ class Event:
     end_frame: int
     excluded: bool
     exclude_reason: str
+    stage_state_index: int = -1
+    stage_state_mean: float = float("nan")
+    off_state_index: int = -1
+    event_source_type: str = "normal_on"
 
 
-def _estimate_dt(times: np.ndarray) -> float:
+def _estimate_dt(times: FloatArray) -> float:
     """Per-frame time step, defaulting to 1.0 for traces shorter than 2 frames."""
     if len(times) < 2:
         return 1.0
@@ -60,10 +68,18 @@ def _is_on_state(state: int, state_path_value: int) -> bool:
     return int(state_path_value) == int(state)
 
 
+def included_statistical_events(events: list[Event]) -> list[Event]:
+    return [
+        event
+        for event in events
+        if not event.excluded and event.event_type in {"ON", "OFF"}
+    ]
+
+
 def extract_events(
-    state_path: np.ndarray,
-    state_means: np.ndarray,
-    times: np.ndarray,
+    state_path: IntArray,
+    state_means: FloatArray,
+    times: FloatArray,
     source_file: str,
     *,
     tail_off_threshold_seconds: float = 100.0,
@@ -75,8 +91,8 @@ def extract_events(
     state_path:
         Per-frame state index, as produced by the HMM Viterbi decode.
     state_means:
-        Emission mean of each state index. The highest-mean state is treated as
-        ON; all other states are OFF.
+        Emission mean of each state index. Two-state data uses the legacy
+        highest-mean ON rule; multi-state data is segmented by stage.
     times:
         Per-frame timestamps (seconds).
     source_file:
@@ -88,6 +104,9 @@ def extract_events(
     if len(state_path) == 0:
         return []
 
+    if len(state_means) > 2:
+        return _extract_multistage_events(state_path, state_means, times, source_file)
+
     on_state = int(np.argmax(state_means))
     dt = _estimate_dt(times)
     type_counts = {"ON": 0, "OFF": 0}
@@ -95,23 +114,28 @@ def extract_events(
 
     start_index = 0
     current_value = int(state_path[0])
+    current_event_type: str = "ON" if _is_on_state(on_state, current_value) else "OFF"
     for index in range(1, len(state_path) + 1):
-        boundary = index == len(state_path) or int(state_path[index]) != current_value
+        if index == len(state_path):
+            next_event_type = current_event_type
+            boundary = True
+        else:
+            next_event_type = "ON" if _is_on_state(on_state, int(state_path[index])) else "OFF"
+            boundary = next_event_type != current_event_type
         if not boundary:
             continue
 
         end_index = index - 1
-        event_type = "ON" if _is_on_state(on_state, current_value) else "OFF"
-        type_counts[event_type] += 1
+        type_counts[current_event_type] += 1
         start_time = float(times[start_index])
         end_time = float(times[end_index])
         duration_seconds = end_time - start_time + dt
         events.append(
             Event(
                 source_file=source_file,
-                event_label=f"{event_type}_{type_counts[event_type]}",
-                event_type=event_type,
-                event_index=type_counts[event_type],
+                event_label=f"{current_event_type}_{type_counts[current_event_type]}",
+                event_type=current_event_type,
+                event_index=type_counts[current_event_type],
                 state_value=float(state_means[current_value]),
                 start_time=start_time,
                 end_time=end_time,
@@ -125,6 +149,7 @@ def extract_events(
         if index < len(state_path):
             start_index = index
             current_value = int(state_path[index])
+            current_event_type = next_event_type
 
     if events:
         last_event = events[-1]
@@ -135,9 +160,132 @@ def extract_events(
     return events
 
 
+def _make_event(
+    source_file: str,
+    event_type: str,
+    event_index: int,
+    state_value: float,
+    times: FloatArray,
+    start_frame: int,
+    end_frame: int,
+    dt: float,
+    stage_state_index: int,
+    stage_state_mean: float,
+    off_state_index: int,
+    event_source_type: str,
+) -> Event:
+    start_time = float(times[start_frame])
+    end_time = float(times[end_frame])
+    return Event(
+        source_file=source_file,
+        event_label=f"stage_{stage_state_index}_{event_type}_{event_index}",
+        event_type=event_type,
+        event_index=event_index,
+        state_value=state_value,
+        start_time=start_time,
+        end_time=end_time,
+        duration_seconds=end_time - start_time + dt,
+        start_frame=start_frame,
+        end_frame=end_frame,
+        excluded=False,
+        exclude_reason="",
+        stage_state_index=stage_state_index,
+        stage_state_mean=stage_state_mean,
+        off_state_index=off_state_index,
+        event_source_type=event_source_type,
+    )
+
+
+def _extract_multistage_events(
+    state_path: IntArray,
+    state_means: FloatArray,
+    times: FloatArray,
+    source_file: str,
+) -> list[Event]:
+    ordered_states = np.argsort(state_means)
+    ranks = np.empty(len(state_means), dtype=np.int64)
+    ranks[ordered_states] = np.arange(len(state_means), dtype=np.int64)
+    ranked_path = ranks[state_path]
+    boundaries = np.flatnonzero(np.diff(ranked_path) != 0) + 1
+    starts = np.concatenate((np.array([0]), boundaries))
+    stops = np.concatenate((boundaries - 1, np.array([len(state_path) - 1])))
+    run_ranks = ranked_path[starts]
+    dt = _estimate_dt(times)
+    events: list[Event] = []
+    counts: dict[tuple[int, str], int] = {}
+
+    def emit(
+        event_type: str,
+        rank: int,
+        start_frame: int,
+        end_frame: int,
+        source_type: str,
+        value_rank: int | None = None,
+    ) -> None:
+        key = (rank, event_type)
+        counts[key] = counts.get(key, 0) + 1
+        on_state = int(ordered_states[rank])
+        value_state = int(ordered_states[rank if value_rank is None else value_rank])
+        events.append(
+            _make_event(
+                source_file,
+                event_type,
+                counts[key],
+                float(state_means[value_state]),
+                times,
+                start_frame,
+                end_frame,
+                dt,
+                on_state,
+                float(state_means[on_state]),
+                int(ordered_states[rank - 1]) if rank > 0 else -1,
+                source_type,
+            )
+        )
+
+    run_index = 0
+    while run_index < len(run_ranks):
+        rank = int(run_ranks[run_index])
+        start_frame = int(starts[run_index])
+        end_frame = int(stops[run_index])
+        if rank == 0:
+            run_index += 1
+            continue
+
+        emit("ON", rank, start_frame, end_frame, "normal_on")
+        next_run_index = run_index + 1
+        if next_run_index == len(run_ranks):
+            break
+
+        next_rank = int(run_ranks[next_run_index])
+        if next_rank >= rank:
+            run_index = next_run_index
+            continue
+
+        recovery_run_index = next_run_index
+        while recovery_run_index < len(run_ranks) and int(run_ranks[recovery_run_index]) < rank:
+            recovery_run_index += 1
+
+        if recovery_run_index < len(run_ranks) and int(run_ranks[recovery_run_index]) == rank:
+            emit(
+                "OFF",
+                rank,
+                int(starts[next_run_index]),
+                int(stops[recovery_run_index - 1]),
+                "normal_off",
+                next_rank,
+            )
+            run_index = recovery_run_index
+            continue
+
+        run_index = recovery_run_index if recovery_run_index < len(run_ranks) else next_run_index
+
+    return events
+
+
 def summarize_events(source_file: str, events: list[Event]) -> dict[str, object]:
     """Per-file summary of ON/OFF event counts and dwell statistics."""
-    included = [event for event in events if not event.excluded]
+    included = included_statistical_events(events)
     included_on = [event for event in included if event.event_type == "ON"]
     included_off = [event for event in included if event.event_type == "OFF"]
     all_on = [event for event in events if event.event_type == "ON"]
@@ -162,7 +310,7 @@ def summarize_events(source_file: str, events: list[Event]) -> dict[str, object]
 
 def summarize_overall(all_events: list[Event], file_count: int) -> dict[str, object]:
     """Aggregate ON/OFF statistics across all processed files."""
-    included = [event for event in all_events if not event.excluded]
+    included = included_statistical_events(all_events)
     included_on = [event for event in included if event.event_type == "ON"]
     included_off = [event for event in included if event.event_type == "OFF"]
     excluded = [event for event in all_events if event.excluded]
@@ -180,6 +328,42 @@ def summarize_overall(all_events: list[Event], file_count: int) -> dict[str, obj
     }
 
 
+def summarize_stage_events(source_file: str, events: list[Event]) -> list[dict[str, object]]:
+    stage_indices = sorted({event.stage_state_index for event in events if event.stage_state_index >= 0})
+    rows: list[dict[str, object]] = []
+    for stage_index in stage_indices:
+        stage_events = [event for event in events if event.stage_state_index == stage_index]
+        row = summarize_events(source_file, stage_events)
+        representative = stage_events[0]
+        row.update(
+            {
+                "stage_state_index": stage_index,
+                "stage_state_mean": round(representative.stage_state_mean, 6),
+                "off_state_index": representative.off_state_index,
+            }
+        )
+        rows.append(row)
+    return rows
+
+
+def summarize_stage_overall(all_events: list[Event], file_count: int) -> list[dict[str, object]]:
+    stage_indices = sorted({event.stage_state_index for event in all_events if event.stage_state_index >= 0})
+    rows: list[dict[str, object]] = []
+    for stage_index in stage_indices:
+        stage_events = [event for event in all_events if event.stage_state_index == stage_index]
+        row = summarize_overall(stage_events, file_count)
+        representative = stage_events[0]
+        row.update(
+            {
+                "stage_state_index": stage_index,
+                "stage_state_mean": round(representative.stage_state_mean, 6),
+                "off_state_index": representative.off_state_index,
+            }
+        )
+        rows.append(row)
+    return rows
+
+
 def event_to_detail_row(event: Event) -> dict[str, object]:
     """Flatten an :class:`Event` into the ``event_details.csv`` row schema."""
     return {
@@ -195,6 +379,10 @@ def event_to_detail_row(event: Event) -> dict[str, object]:
         "end_frame": event.end_frame,
         "excluded": event.excluded,
         "exclude_reason": event.exclude_reason,
+        "stage_state_index": event.stage_state_index,
+        "stage_state_mean": round(event.stage_state_mean, 6),
+        "off_state_index": event.off_state_index,
+        "event_source_type": event.event_source_type,
     }
 
 
@@ -211,6 +399,10 @@ DETAIL_FIELDS = [
     "end_frame",
     "excluded",
     "exclude_reason",
+    "stage_state_index",
+    "stage_state_mean",
+    "off_state_index",
+    "event_source_type",
 ]
 
 SUMMARY_FIELDS = [
@@ -226,6 +418,13 @@ SUMMARY_FIELDS = [
     "last_event_type",
     "last_event_duration_seconds",
     "tail_off_excluded",
+]
+
+STAGE_SUMMARY_FIELDS = [
+    "stage_state_index",
+    "stage_state_mean",
+    "off_state_index",
+    *SUMMARY_FIELDS,
 ]
 
 

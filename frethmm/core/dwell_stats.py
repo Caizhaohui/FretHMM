@@ -12,15 +12,30 @@ extended analysis on top of the same ``Event`` objects.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, TypedDict
 
 import numpy as np
 
-from frethmm.core.events import Event, summarize_events, summarize_overall
+from frethmm.core.events import (
+    Event,
+    included_statistical_events,
+    summarize_events,
+    summarize_overall,
+)
 
 # Sentinel for "no value" in CSV output, matching events.py's blank-cell
 # convention for empty ON/OFF groups.
 _BLANK = ""
+
+
+class DwellFit(TypedDict):
+    amplitude: float
+    rate: float
+    rate_std: float
+    mean_time: float
+    n_events: int
+    n_bins: int
+    converged: bool
 
 
 def describe_durations(durations: list[float]) -> dict[str, object]:
@@ -53,7 +68,7 @@ def fit_exponential_dwell(
     durations: list[float],
     *,
     n_bins: Optional[int] = None,
-) -> Optional[dict]:
+) -> Optional[DwellFit]:
     """Single-exponential fit ``A·exp(-k·t)`` of a dwell-time distribution.
 
     Mirrors the histogram + ``curve_fit`` pattern already used by
@@ -146,7 +161,7 @@ def summarize_events_extended(source_file: str, events: list[Event]) -> dict[str
     ``p25``/``p75`` for ON and OFF dwell times.
     """
     base = summarize_events(source_file, events)
-    included = [event for event in events if not event.excluded]
+    included = included_statistical_events(events)
     on_durations = [event.duration_seconds for event in included if event.event_type == "ON"]
     off_durations = [event.duration_seconds for event in included if event.event_type == "OFF"]
 
@@ -158,7 +173,7 @@ def summarize_events_extended(source_file: str, events: list[Event]) -> dict[str
 def summarize_overall_extended(all_events: list[Event], file_count: int) -> dict[str, object]:
     """Cross-file aggregate with the full descriptive-stat block per event type."""
     base = summarize_overall(all_events, file_count)
-    included = [event for event in all_events if not event.excluded]
+    included = included_statistical_events(all_events)
     on_durations = [event.duration_seconds for event in included if event.event_type == "ON"]
     off_durations = [event.duration_seconds for event in included if event.event_type == "OFF"]
 
@@ -167,7 +182,7 @@ def summarize_overall_extended(all_events: list[Event], file_count: int) -> dict
     return base
 
 
-def fit_dict_to_columns(fit: Optional[dict], *, prefix: str) -> dict[str, object]:
+def fit_dict_to_columns(fit: Optional[DwellFit], *, prefix: str) -> dict[str, object]:
     """Flatten a fit result into ``{prefix}_rate_constant``-style CSV columns.
 
     A ``None`` fit (too few samples / non-convergence) yields blank strings so

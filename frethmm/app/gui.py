@@ -52,6 +52,15 @@ def _append_debug_log(message: str) -> None:
         pass
 
 
+def _center_on_parent(dlg: ctk.CTkToplevel, width: int, height: int) -> None:
+    """Centre a Toplevel on its parent or the screen."""
+    sw = dlg.winfo_screenwidth()
+    sh = dlg.winfo_screenheight()
+    x = (sw - width) // 2
+    y = (sh - height) // 2
+    dlg.geometry(f"{width}x{height}+{x}+{y}")
+
+
 def _resource_path(relative: str) -> Path:
     base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2]))
     return base / relative
@@ -298,6 +307,7 @@ class _App:
         self._review_cols_var = tk.IntVar(value=8)
         self._review_output_var = tk.StringVar(value="review_grid.png")
         self._review_image_paths: list[str] = []
+        self._events_output_dir: Optional[str] = None
 
     def _t(self, key: str, **kwargs) -> str:
         from frethmm.app.i18n import t, get_language
@@ -377,6 +387,7 @@ class _App:
 
         self._build_review_grid_section(action_review_row, column=0, padx=(0, 4))
         self._build_action_section(action_review_row, column=1, padx=(4, 0))
+        self._build_post_section(left_panel)
         self._build_status_bar(left_panel)
         
         # Build Visualization Canvas
@@ -963,6 +974,402 @@ class _App:
         self._log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         log_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
+    def _build_post_section(self, parent: ctk.CTkFrame) -> None:
+        """Post-processing row with Events / Dwell-Stats / TDP buttons."""
+        self._post_frame = ctk.CTkFrame(parent)
+        self._post_frame.pack(fill=tk.X, pady=(4, 8), padx=2)
+
+        lbl = ctk.CTkLabel(
+            self._post_frame,
+            text=self._t("section_post_processing"),
+            font=ctk.CTkFont(weight="bold"),
+        )
+        lbl.pack(anchor=tk.W, padx=10, pady=5)
+        self._post_title_label = lbl
+
+        btn_row = ctk.CTkFrame(self._post_frame, fg_color="transparent")
+        btn_row.pack(fill=tk.X, padx=10, pady=5)
+        for i in range(3):
+            btn_row.grid_columnconfigure(i, weight=1)
+
+        self._btn_events = ctk.CTkButton(
+            btn_row,
+            text=self._t("btn_extract_events"),
+            command=self._show_events_dialog,
+            width=130,
+            fg_color="#00838F",
+            hover_color="#006064",
+        )
+        self._btn_events.grid(row=0, column=0, padx=(0, 6), sticky="ew")
+
+        self._btn_dwell = ctk.CTkButton(
+            btn_row,
+            text=self._t("btn_dwell_stats"),
+            command=self._show_dwell_dialog,
+            width=130,
+            fg_color="#6A1B9A",
+            hover_color="#4A148C",
+        )
+        self._btn_dwell.grid(row=0, column=1, padx=(0, 6), sticky="ew")
+
+        self._btn_tdp = ctk.CTkButton(
+            btn_row,
+            text=self._t("btn_tdp_plot"),
+            command=self._show_tdp_dialog,
+            width=130,
+            fg_color="#E65100",
+            hover_color="#BF360C",
+        )
+        self._btn_tdp.grid(row=0, column=2, sticky="ew")
+
+    # -- Events dialog + runner ------------------------------------------------
+
+    def _show_events_dialog(self) -> None:
+        if not self._classified_outputs:
+            messagebox.showwarning(
+                self._t("dlg_events_title"),
+                self._t("msg_events_no_results"),
+            )
+            return
+
+        dlg = ctk.CTkToplevel(self.root)
+        dlg.title(self._t("dlg_events_title"))
+        dlg.geometry("440x200")
+        dlg.resizable(False, False)
+        dlg.transient(self.root)
+        dlg.grab_set()
+        _center_on_parent(dlg, 440, 200)
+
+        frame = ctk.CTkFrame(dlg, corner_radius=0, fg_color="transparent")
+        frame.pack(fill=tk.BOTH, expand=True, padding=20)
+
+        ctk.CTkLabel(frame, text=self._t("dlg_events_output_dir")).grid(
+            row=0, column=0, sticky=tk.W, pady=6,
+        )
+        out_var = tk.StringVar(value=self.output_dir or "")
+        ctk.CTkEntry(frame, textvariable=out_var, width=300).grid(
+            row=0, column=1, padx=(10, 0), pady=6, sticky=tk.W,
+        )
+
+        ctk.CTkLabel(frame, text=self._t("dlg_events_tail_threshold")).grid(
+            row=1, column=0, sticky=tk.W, pady=6,
+        )
+        thresh_var = tk.StringVar(value="100.0")
+        ctk.CTkEntry(frame, textvariable=thresh_var, width=80).grid(
+            row=1, column=1, padx=(10, 0), pady=6, sticky=tk.W,
+        )
+        ctk.CTkLabel(
+            frame, text=self._t("hint_events_tail_threshold"), text_color="#757575",
+        ).grid(row=2, column=1, padx=(10, 0), sticky=tk.W)
+
+        def apply():
+            dlg.destroy()
+            out_dir = out_var.get().strip()
+            if not out_dir:
+                messagebox.showerror(self._t("msg_invalid_params"), "Output directory is required.")
+                return
+            try:
+                threshold = float(thresh_var.get().strip())
+            except ValueError:
+                messagebox.showerror(self._t("msg_invalid_params"), "Threshold must be a number.")
+                return
+            self._run_events(out_dir, threshold)
+
+        btn_frame = ctk.CTkFrame(frame, fg_color="transparent")
+        btn_frame.grid(row=3, column=0, columnspan=2, pady=(16, 0))
+        ctk.CTkButton(btn_frame, text="OK", command=apply, width=90).pack(side=tk.LEFT, padx=6)
+        ctk.CTkButton(btn_frame, text="Cancel", command=dlg.destroy, width=90, fg_color="grey").pack(side=tk.LEFT, padx=6)
+
+    def _run_events(self, output_dir: str, tail_off_threshold_seconds: float) -> None:
+        import csv as csv_module
+
+        from frethmm.core.events import (
+            DETAIL_FIELDS, STAGE_SUMMARY_FIELDS, SUMMARY_FIELDS,
+            event_to_detail_row, extract_events, included_statistical_events,
+            overall_fields, summarize_stage_events, summarize_stage_overall,
+            summarize_events, summarize_overall,
+        )
+        from frethmm.formats.classified_parser import read_classified_csv
+
+        all_events = []
+        per_file_summaries = []
+        multistage_files = 0
+        classified_paths = sorted(self._classified_outputs.values(), key=lambda p: p.name)
+        for cp in classified_paths:
+            try:
+                sp, sm, times = read_classified_csv(cp)
+                events = extract_events(sp, sm, times, cp.name, tail_off_threshold_seconds=tail_off_threshold_seconds)
+            except Exception as exc:
+                print(f"  ERROR {cp.name}: {exc}")
+                continue
+            all_events.extend(events)
+            if len(sm) > 2:
+                multistage_files += 1
+                per_file_summaries.extend(summarize_stage_events(cp.name, events))
+            else:
+                per_file_summaries.append(summarize_events(cp.name, events))
+
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        detail_rows = [event_to_detail_row(e) for e in all_events]
+        if multistage_files:
+            overall_rows = summarize_stage_overall(all_events, len(classified_paths))
+            binary_events = [event for event in all_events if event.stage_state_index < 0]
+            if binary_events:
+                binary_overall = summarize_overall(binary_events, len(classified_paths))
+                binary_overall.update({"stage_state_index": "", "stage_state_mean": "", "off_state_index": ""})
+                overall_rows.append(binary_overall)
+        else:
+            overall_rows = [summarize_overall(all_events, len(classified_paths))]
+
+        def _w(name, fields, rows):
+            p = out / name
+            with p.open("w", encoding="utf-8", newline="") as h:
+                w = csv_module.DictWriter(h, fieldnames=fields)
+                w.writeheader()
+                w.writerows(rows)
+
+        _w("event_details.csv", DETAIL_FIELDS, detail_rows)
+        _w("event_summary.csv", STAGE_SUMMARY_FIELDS if multistage_files else SUMMARY_FIELDS, per_file_summaries)
+        _w("event_stats_overall.csv", overall_fields(overall_rows[0]), overall_rows)
+
+        self._events_output_dir = str(out)
+        self._log(
+            self._t("msg_events_done", n=len(classified_paths), dir=str(out)), "success"
+        )
+        messagebox.showinfo(
+            self._t("dlg_events_title"),
+            self._t("msg_events_done", n=len(classified_paths), dir=str(out)),
+        )
+
+    # -- Dwell-Stats dialog + runner -------------------------------------------
+
+    def _show_dwell_dialog(self) -> None:
+        if not self._events_output_dir:
+            messagebox.showwarning(
+                self._t("dlg_dwell_title"),
+                self._t("msg_dwell_no_events"),
+            )
+            return
+
+        dlg = ctk.CTkToplevel(self.root)
+        dlg.title(self._t("dlg_dwell_title"))
+        dlg.geometry("480x250")
+        dlg.resizable(False, False)
+        dlg.transient(self.root)
+        dlg.grab_set()
+        _center_on_parent(dlg, 480, 250)
+
+        frame = ctk.CTkFrame(dlg, corner_radius=0, fg_color="transparent")
+        frame.pack(fill=tk.BOTH, expand=True, padding=20)
+
+        default_input = str(Path(self._events_output_dir) / "event_details.csv")
+        ctk.CTkLabel(frame, text=self._t("dlg_dwell_input")).grid(
+            row=0, column=0, sticky=tk.W, pady=6,
+        )
+        inp_entry = ctk.CTkEntry(frame, width=300)
+        inp_entry.insert(0, default_input)
+        inp_entry.configure(state="readonly")
+        inp_entry.grid(row=0, column=1, padx=(10, 0), pady=6, sticky=tk.W)
+
+        ctk.CTkLabel(frame, text=self._t("dlg_dwell_output_dir")).grid(
+            row=1, column=0, sticky=tk.W, pady=6,
+        )
+        out_var = tk.StringVar(value=self._events_output_dir)
+        ctk.CTkEntry(frame, textvariable=out_var, width=300).grid(
+            row=1, column=1, padx=(10, 0), pady=6, sticky=tk.W,
+        )
+
+        ctk.CTkLabel(frame, text=self._t("dlg_dwell_bins")).grid(
+            row=2, column=0, sticky=tk.W, pady=6,
+        )
+        bins_var = tk.StringVar(value="0")
+        ctk.CTkEntry(frame, textvariable=bins_var, width=60).grid(
+            row=2, column=1, padx=(10, 0), pady=6, sticky=tk.W,
+        )
+
+        no_fit_var = tk.BooleanVar(value=False)
+        ctk.CTkCheckBox(
+            frame, text=self._t("dlg_dwell_no_fit"), variable=no_fit_var,
+        ).grid(row=3, column=1, padx=(10, 0), pady=(6, 0), sticky=tk.W)
+
+        def apply():
+            dlg.destroy()
+            out_dir = out_var.get().strip()
+            if not out_dir:
+                messagebox.showerror(self._t("msg_invalid_params"), "Output directory is required.")
+                return
+            try:
+                bins_val = int(bins_var.get().strip())
+            except ValueError:
+                bins_val = 0
+            self._run_dwell_stats(default_input, out_dir, None if bins_val <= 0 else bins_val, no_fit_var.get())
+
+        btn_frame = ctk.CTkFrame(frame, fg_color="transparent")
+        btn_frame.grid(row=4, column=0, columnspan=2, pady=(16, 0))
+        ctk.CTkButton(btn_frame, text="OK", command=apply, width=90).pack(side=tk.LEFT, padx=6)
+        ctk.CTkButton(btn_frame, text="Cancel", command=dlg.destroy, width=90, fg_color="grey").pack(side=tk.LEFT, padx=6)
+
+    def _run_dwell_stats(self, input_path: str, output_dir: str, bins: Optional[int], no_fit: bool) -> None:
+        import csv as csv_module
+
+        from frethmm.core.dwell_stats import (
+            describe_durations, fit_dict_to_columns, fit_exponential_dwell,
+            summarize_events_extended, summarize_overall_extended,
+        )
+        from frethmm.formats.event_details_parser import read_event_details
+        from frethmm.core.events import included_statistical_events
+
+        events = read_event_details(Path(input_path))
+        if not events:
+            messagebox.showerror(self._t("msg_invalid_params"), "No events found.")
+            return
+
+        included = included_statistical_events(events)
+        on_durations = [e.duration_seconds for e in included if e.event_type == "ON"]
+        off_durations = [e.duration_seconds for e in included if e.event_type == "OFF"]
+        source_files = {e.source_file for e in events}
+        multistage_output = any(event.stage_state_index >= 0 for event in events)
+        stage_indices = sorted({event.stage_state_index for event in events}) if multistage_output else [-1]
+        overall_rows = []
+        per_file_rows = []
+        for stage_index in stage_indices:
+            stage_events = [event for event in events if event.stage_state_index == stage_index]
+            stage_included = included_statistical_events(stage_events)
+            stage_on = [event.duration_seconds for event in stage_included if event.event_type == "ON"]
+            stage_off = [event.duration_seconds for event in stage_included if event.event_type == "OFF"]
+            overall = summarize_overall_extended(stage_events, len(source_files))
+            overall["file_count"] = len(source_files)
+            overall["total_events"] = len(stage_events)
+            overall["included_events"] = len(stage_included)
+            if multistage_output:
+                representative = stage_events[0]
+                overall.update({
+                    "stage_state_index": stage_index if stage_index >= 0 else "",
+                    "stage_state_mean": round(representative.stage_state_mean, 6) if stage_index >= 0 else "",
+                    "off_state_index": representative.off_state_index if stage_index >= 0 else "",
+                })
+            on_fit = fit_exponential_dwell(stage_on, n_bins=bins) if not no_fit else None
+            off_fit = fit_exponential_dwell(stage_off, n_bins=bins) if not no_fit else None
+            overall.update(fit_dict_to_columns(on_fit, prefix="on"))
+            overall.update(fit_dict_to_columns(off_fit, prefix="off"))
+            overall_rows.append(overall)
+            for source in sorted(source_files):
+                file_events = [event for event in stage_events if event.source_file == source]
+                if not file_events:
+                    continue
+                row = summarize_events_extended(source, file_events)
+                if multistage_output:
+                    representative = file_events[0]
+                    row.update({
+                        "stage_state_index": stage_index if stage_index >= 0 else "",
+                        "stage_state_mean": round(representative.stage_state_mean, 6) if stage_index >= 0 else "",
+                        "off_state_index": representative.off_state_index if stage_index >= 0 else "",
+                    })
+                per_file_rows.append(row)
+
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        with (out / "dwell_stats_summary.csv").open("w", encoding="utf-8", newline="") as h:
+            w = csv_module.DictWriter(h, fieldnames=list(overall_rows[0].keys()))
+            w.writeheader()
+            w.writerows(overall_rows)
+        fns = list(per_file_rows[0].keys()) if per_file_rows else []
+        with (out / "dwell_stats_per_file.csv").open("w", encoding="utf-8", newline="") as h:
+            w = csv_module.DictWriter(h, fieldnames=fns)
+            w.writeheader()
+            w.writerows(per_file_rows)
+
+        on_k = overall_rows[0].get("on_rate_constant", "")
+        off_k = overall_rows[0].get("off_rate_constant", "")
+        msg = self._t(
+            "msg_dwell_done", on_n=len(on_durations), on_k=on_k,
+            off_n=len(off_durations), off_k=off_k, dir=str(out),
+        )
+        self._log(msg, "success")
+        messagebox.showinfo(self._t("dlg_dwell_title"), msg)
+
+    # -- TDP dialog + runner ---------------------------------------------------
+
+    def _show_tdp_dialog(self) -> None:
+        dlg = ctk.CTkToplevel(self.root)
+        dlg.title(self._t("dlg_tdp_title"))
+        dlg.geometry("480x280")
+        dlg.resizable(False, False)
+        dlg.transient(self.root)
+        dlg.grab_set()
+        _center_on_parent(dlg, 480, 280)
+
+        frame = ctk.CTkFrame(dlg, corner_radius=0, fg_color="transparent")
+        frame.pack(fill=tk.BOTH, expand=True, padding=20)
+
+        ctk.CTkLabel(frame, text=self._t("dlg_tdp_input_dir")).grid(
+            row=0, column=0, sticky=tk.W, pady=6,
+        )
+        inp_var = tk.StringVar(value=self.output_dir or "")
+        ctk.CTkEntry(frame, textvariable=inp_var, width=300).grid(
+            row=0, column=1, padx=(10, 0), pady=6, sticky=tk.W,
+        )
+
+        ctk.CTkLabel(frame, text=self._t("dlg_tdp_exposure")).grid(
+            row=1, column=0, sticky=tk.W, pady=6,
+        )
+        exp_var = tk.StringVar(value="0.1")
+        ctk.CTkEntry(frame, textvariable=exp_var, width=60).grid(
+            row=1, column=1, padx=(10, 0), pady=6, sticky=tk.W,
+        )
+
+        ctk.CTkLabel(frame, text=self._t("dlg_tdp_states")).grid(
+            row=2, column=0, sticky=tk.W, pady=6,
+        )
+        states_var = tk.StringVar(value="")
+        ctk.CTkEntry(frame, textvariable=states_var, width=60).grid(
+            row=2, column=1, padx=(10, 0), pady=6, sticky=tk.W,
+        )
+
+        ctk.CTkLabel(frame, text=self._t("dlg_tdp_output")).grid(
+            row=3, column=0, sticky=tk.W, pady=6,
+        )
+        out_var = tk.StringVar(value="")
+        ctk.CTkEntry(frame, textvariable=out_var, width=300).grid(
+            row=3, column=1, padx=(10, 0), pady=6, sticky=tk.W,
+        )
+
+        def apply():
+            dlg.destroy()
+            indir = Path(inp_var.get().strip())
+            if not indir.is_dir():
+                messagebox.showerror(self._t("msg_invalid_params"), "Invalid report directory.")
+                return
+            exposure = float(exp_var.get().strip())
+            n_states_str = states_var.get().strip()
+            n_states = int(n_states_str) if n_states_str else None
+            output = out_var.get().strip() or None
+            self._run_tdp(indir, exposure, n_states, output)
+
+        btn_frame = ctk.CTkFrame(frame, fg_color="transparent")
+        btn_frame.grid(row=4, column=0, columnspan=2, pady=(16, 0))
+        ctk.CTkButton(btn_frame, text="OK", command=apply, width=90).pack(side=tk.LEFT, padx=6)
+        ctk.CTkButton(btn_frame, text="Cancel", command=dlg.destroy, width=90, fg_color="grey").pack(side=tk.LEFT, padx=6)
+
+    def _run_tdp(self, input_dir: Path, exposure: float, n_states: Optional[int], output: Optional[str]) -> None:
+        from frethmm.viz.tdp import generate_tdp
+
+        report_files = sorted(
+            f for f in input_dir.iterdir()
+            if f.is_file() and "report" in f.name.lower() and f.suffix in (".dat", ".txt")
+        )
+        if not report_files:
+            messagebox.showwarning(
+                self._t("dlg_tdp_title"),
+                self._t("msg_tdp_no_reports"),
+            )
+            return
+
+        generate_tdp(input_dir, exposure=exposure, n_display_states=n_states, output=output)
+        if output:
+            self._log(self._t("msg_tdp_done", path=output), "success")
+
     def _build_status_bar(self, parent: ctk.CTkFrame) -> None:
         status_frame = ctk.CTkFrame(parent, fg_color="transparent")
         status_frame.pack(fill=tk.X, pady=(4, 0), padx=5)
@@ -1208,10 +1615,14 @@ class _App:
         self._run_btn.configure(text=self._t("btn_run"))
         self._review_title_label.configure(text=self._t("section_review_grid"))
         self._review_rows_label.configure(text=self._t("label_review_rows"))
+        self._review_rows_label.configure(text=self._t("label_review_rows"))
         self._review_cols_label.configure(text=self._t("label_review_cols"))
         self._review_output_label.configure(text=self._t("label_review_output"))
         self._review_btn.configure(text=self._t("btn_review_grid"))
         self._cancel_btn.configure(text=self._t("btn_cancel"))
+        self._btn_events.configure(text=self._t("btn_extract_events"))
+        self._btn_dwell.configure(text=self._t("btn_dwell_stats"))
+        self._btn_tdp.configure(text=self._t("btn_tdp_plot"))
         self._result_summary_label.configure(text=self._t("section_runtime_panel"))
         self._selection_title_label.configure(text=self._t("section_result_details"))
         self._runtime_status_label.configure(text=self._t("runtime_status"))

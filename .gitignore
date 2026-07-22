@@ -36,6 +36,12 @@ tmp_*.json
 tmp_*.png
 _smoke_out/
 *.log
+frethmm_run_manifest_*.json
+event_details.csv
+event_summary.csv
+event_stats_overall.csv
+dwell_stats_summary.csv
+dwell_stats_per_file.csv
 
 # Logs
 logs/

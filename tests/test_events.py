@@ -12,9 +12,11 @@ Covers:
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from frethmm.core.events import (
     extract_events,
+    summarize_stage_events,
     summarize_events,
     summarize_overall,
 )
@@ -59,17 +61,87 @@ def test_extract_events_two_state_matches_legacy_semantics():
     assert events[1].state_value == 0.1
 
 
-def test_extract_events_three_state_highest_is_on():
-    """3-state: only the highest-mean state (0.9) is ON; the two lowers are OFF."""
-    # state 0 (0.2)=OFF, state 1 (0.5)=OFF, state 2 (0.9)=ON
-    events = _run([0, 0, 1, 1, 2, 2, 1, 1], [0.2, 0.5, 0.9])
+def test_extract_events_three_state_records_adjacent_high_stage_off_return():
+    events = _run([2, 2, 1, 1, 2, 2], [0.2, 0.5, 0.9])
 
-    assert [e.event_type for e in events] == ["OFF", "OFF", "ON", "OFF"]
-    # ON indices only increment on ON events; OFF counts every non-ON segment.
-    assert events[0].event_index == 1  # OFF_1
-    assert events[1].event_index == 2  # OFF_2
-    assert events[2].event_index == 1  # ON_1
-    assert events[3].event_index == 3  # OFF_3
+    assert [(event.event_type, event.event_source_type) for event in events] == [
+        ("ON", "normal_on"),
+        ("OFF", "normal_off"),
+        ("ON", "normal_on"),
+    ]
+    assert [(event.start_frame, event.end_frame) for event in events] == [(0, 1), (2, 3), (4, 5)]
+
+
+def test_extract_events_three_state_tracks_each_adjacent_stage_independently():
+    high_events = _run([2, 2, 2, 1, 1, 2, 2], [0.2, 0.5, 0.9])
+    middle_events = _run([1, 1, 0, 0, 1, 1], [0.2, 0.5, 0.9])
+
+    stage_two = [event for event in high_events if event.stage_state_index == 2]
+    stage_one = [event for event in middle_events if event.stage_state_index == 1]
+    assert [(event.event_type, event.duration_seconds) for event in stage_two] == [
+        ("ON", 3.0), ("OFF", 2.0), ("ON", 2.0),
+    ]
+    assert [(event.event_type, event.duration_seconds) for event in stage_one] == [
+        ("ON", 2.0), ("OFF", 2.0), ("ON", 2.0),
+    ]
+    assert all(event.off_state_index == event.stage_state_index - 1 for event in high_events + middle_events)
+
+
+@pytest.mark.parametrize("off_frames", [1, 2, 3, 4, 10])
+def test_extract_events_three_state_counts_any_recovery_duration_as_off(off_frames):
+    events = _run([2, 2] + [1] * off_frames + [2, 2], [0.2, 0.5, 0.9])
+
+    assert [(event.stage_state_index, event.event_type) for event in events] == [
+        (2, "ON"),
+        (2, "OFF"),
+        (2, "ON"),
+    ]
+    assert events[1].start_frame == 2
+    assert events[1].end_frame == off_frames + 1
+
+
+def test_extract_events_three_state_counts_multi_low_state_recovery_as_one_off():
+    events = _run([2, 2, 1, 1, 0, 0, 2, 2], [0.2, 0.5, 0.9])
+
+    assert [(event.stage_state_index, event.event_type, event.start_frame, event.end_frame) for event in events] == [
+        (2, "ON", 0, 1),
+        (2, "OFF", 2, 5),
+        (2, "ON", 6, 7),
+    ]
+
+
+def test_extract_events_three_state_starts_lower_stage_without_transition_audit_row():
+    events = _run([2, 2, 1, 1, 1, 1], [0.2, 0.5, 0.9])
+
+    assert [(event.stage_state_index, event.event_type, event.start_frame, event.end_frame) for event in events] == [
+        (2, "ON", 0, 1),
+        (1, "ON", 2, 5),
+    ]
+    high_stage = next(row for row in summarize_stage_events("trace.csv", events) if row["stage_state_index"] == 2)
+    assert high_stage["included_on_event_count"] == 1
+    assert high_stage["included_off_event_count"] == 0
+
+
+def test_extract_events_three_state_stable_drop_followed_by_low_stage_has_no_audit_rows():
+    events = _run([2, 2, 1, 1, 0, 0], [0.2, 0.5, 0.9])
+
+    assert [(event.stage_state_index, event.event_type, event.start_frame, event.end_frame) for event in events] == [
+        (2, "ON", 0, 1),
+        (1, "ON", 2, 3),
+    ]
+
+
+def test_extract_events_marks_jump_down_without_recovery_audit_row():
+    events = _run([2, 2, 0, 0, 1, 1], [0.2, 0.5, 0.9])
+
+    assert [(event.event_type, event.event_source_type) for event in events] == [
+        ("ON", "normal_on"),
+        ("ON", "normal_on"),
+    ]
+    summary = summarize_stage_events("trace.csv", events)
+    high_stage = next(row for row in summary if row["stage_state_index"] == 2)
+    assert high_stage["included_on_event_count"] == 1
+    assert high_stage["included_off_event_count"] == 0
 
 
 def test_extract_events_single_state_all_on():

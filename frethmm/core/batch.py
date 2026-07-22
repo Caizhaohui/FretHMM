@@ -16,7 +16,7 @@ def process_batch(
     config: ClassificationConfig,
     output_dir: Optional[Path] = None,
     classified_only: bool = False,
-    extensions: tuple = (".dat", ".txt", ".csv", ".tsv"),
+    extensions: tuple[str, ...] = (".dat", ".txt", ".csv", ".tsv"),
 ) -> list[ClassificationResult]:
     files = find_trace_files(input_dir, extensions)
     if not files:

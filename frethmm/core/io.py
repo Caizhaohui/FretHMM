@@ -248,7 +248,7 @@ def read_state_report(filepath: Union[str, Path]) -> dict:
 
 def find_trace_files(
     input_dir: Union[str, Path],
-    extensions: tuple = (".dat", ".txt", ".csv", ".tsv"),
+    extensions: tuple[str, ...] = (".dat", ".txt", ".csv", ".tsv"),
 ) -> list[Path]:
     input_dir = Path(input_dir)
     if not input_dir.is_dir():

@@ -508,9 +508,23 @@ pip install -e ".[dev]"
 pytest tests/ -v
 ```
 
+## 可复现性
+
+每次成功的 CLI 分析都会在主输出旁写入带时间戳的
+`frethmm_run_manifest_*.json`。该清单记录命令、拟合参数、输入/输出文件元数据、
+FretHMM 版本、Python 版本和运行时依赖版本，但不会复制实验数据。即使使用
+`--classified-only`，也会保留运行清单；该选项仅跳过分类的辅助输出。
+
+`tests/data/` 中提交的是小型合成或脱敏的 CSV 与兼容报告样本，可完整运行核心
+回归测试，不包含原始图像或 ND2 文件。FretHMM 当前从已导出的轨迹文件
+（`.csv`、`.dat`、`.txt`、`.tsv`）开始分析；ND2 图像到轨迹的处理仍属于上游流程。
+
 ## 打包为可执行文件
 
 ```bash
+# 先安装明确的构建依赖
+pip install -e ".[gui]"
+
 # 目录模式（默认，生成 dist/FretHMM/ 目录）
 python build_exe.py
 
@@ -518,11 +532,13 @@ python build_exe.py
 python build_exe.py --onefile
 ```
 
-构建产物为独立的 Windows GUI 可执行文件，无需 Python 环境。单文件模式体积较大但便于分发。
+构建产物为独立的 Windows GUI 可执行文件，无需 Python 环境。目录模式还会生成
+`dist/FretHMM.zip`、SHA-256 校验文件和 JSON 发布清单。可使用
+`dist/FretHMM/FretHMM.exe --version` 验证 EXE 启动路径而不打开 GUI。
 
 ## 更新日志
 
-### v1.4.0 (2026-06-22)
+### v1.4.0（候选发布）
 
 停留时间统计与速率常数拟合：
 
@@ -531,6 +547,8 @@ python build_exe.py --onefile
 - **新增模块**：`frethmm/core/dwell_stats.py`（`describe_durations`、`fit_exponential_dwell`、扩展汇总）与 `frethmm/formats/event_details_parser.py`（反解析 `event_details.csv`）。
 - **无回归**：`events` 命令与 `events.py` 不变；`dwell-stats` 是纯下游消费者。
 - **测试**：新增 `test_dwell_stats.py`（12 项）与 `test_dwell_stats_cli.py`（3 项端到端），均自包含。
+- **发布可复现性**：CLI 分析命令现在写入带时间戳的运行清单；提交脱敏夹具替代依赖工作区的跳过回归测试；Windows CI 构建 GUI 包并进行版本启动检查。
+- **尾部裁剪修正**：仅当最低态持续到轨迹末尾时才裁剪，避免错误删除中间的有效低态片段。
 
 ### v1.3.0 (2026-06-15)
 

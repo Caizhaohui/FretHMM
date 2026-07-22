@@ -14,14 +14,19 @@ from __future__ import annotations
 
 import csv
 from pathlib import Path
-from typing import Union
+from typing import TypeAlias, Union
 
 import numpy as np
+import numpy.typing as npt
+
+
+FloatArray: TypeAlias = npt.NDArray[np.float64]
+IntArray: TypeAlias = npt.NDArray[np.int64]
 
 
 def read_classified_csv(
     filepath: Union[str, Path],
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[IntArray, FloatArray, FloatArray]:
     """Reconstruct ``(state_path, state_means, times)`` from a classified CSV.
 
     Parameters

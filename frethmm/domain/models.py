@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, Optional, Union
+from typing import Literal, Optional, TypeAlias, Union
 
 import numpy as np
+import numpy.typing as npt
 
 
 DEFAULT_MAX_ITER = 500
@@ -19,6 +20,8 @@ DEFAULT_MAX_STATES = 6
 # without relying on a magic string.
 AUTO_STATES = "auto"
 StateCount = Union[int, Literal["auto"]]
+FloatArray: TypeAlias = npt.NDArray[np.float64]
+IntArray: TypeAlias = npt.NDArray[np.int64]
 
 
 @dataclass
@@ -97,17 +100,17 @@ class ClassificationConfig:
         self,
         data_min: float = 0.0,
         data_max: float = 1.0,
-    ) -> np.ndarray:
+    ) -> FloatArray:
         if self.guesses is not None:
             return np.array(self.guesses, dtype=np.float64)
         n_states = self._resolved_n_states()
-        return np.linspace(data_min, data_max, n_states + 2)[1:-1]
+        return np.linspace(data_min, data_max, n_states + 2, dtype=np.float64)[1:-1]
 
     def default_means(
         self,
         data_min: float = 0.0,
         data_max: float = 1.0,
-    ) -> np.ndarray:
+    ) -> FloatArray:
         return self.default_state_means(data_min, data_max)
 
     def _resolved_n_states(self) -> int:
@@ -118,14 +121,14 @@ class ClassificationConfig:
 
 @dataclass
 class SignalTrace:
-    time: np.ndarray
-    signal: np.ndarray
-    observations: np.ndarray
+    time: FloatArray
+    signal: FloatArray
+    observations: FloatArray
     filepath: Optional[Path] = None
     mode: Literal["single_channel", "paired_channel"] = "single_channel"
-    channel_1: Optional[np.ndarray] = None
-    channel_2: Optional[np.ndarray] = None
-    derived_signal: Optional[np.ndarray] = None
+    channel_1: Optional[FloatArray] = None
+    channel_2: Optional[FloatArray] = None
+    derived_signal: Optional[FloatArray] = None
 
     @property
     def n_frames(self) -> int:
@@ -148,18 +151,18 @@ class SignalTrace:
 class ClassificationResult:
     n_states: int
     log_prob: float
-    state_means: np.ndarray
+    state_means: FloatArray
     state_sigma: float
     signal_sigma: float
-    transition_matrix: np.ndarray
-    state_path: np.ndarray
-    classified_signal: np.ndarray
-    fraction_spent: np.ndarray
-    transitions_found: np.ndarray
+    transition_matrix: FloatArray
+    state_path: IntArray
+    classified_signal: FloatArray
+    fraction_spent: FloatArray
+    transitions_found: IntArray
     filepath: Optional[Path] = None
     warnings: list[str] = field(default_factory=list)
-    trace_time: Optional[np.ndarray] = None
-    trace_signal: Optional[np.ndarray] = None
+    trace_time: Optional[FloatArray] = None
+    trace_signal: Optional[FloatArray] = None
     low_state_tail_trim_seconds: Optional[float] = None
     low_state_tail_cutoff_time: Optional[float] = None
     low_state_tail_kept_frames: Optional[int] = None
@@ -170,10 +173,10 @@ class ClassificationResult:
     # Model-selection metadata (populated only when ``--states auto``).
     bic: Optional[float] = None
     aic: Optional[float] = None
-    model_candidates: Optional[list[dict]] = None
+    model_candidates: Optional[list[dict[str, object]]] = None
 
     @property
-    def dwell_segments(self) -> np.ndarray:
+    def dwell_segments(self) -> FloatArray:
         from frethmm.core.postprocess import extract_dwell_segments
 
         return extract_dwell_segments(self)

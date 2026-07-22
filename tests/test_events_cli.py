@@ -74,6 +74,16 @@ def test_cli_events_input_dir_writes_three_tables(tmp_path):
     # Overall aggregate present.
     assert len(overall) == 1
     assert int(overall[0]["file_count"]) == 1
+    manifests = list(out_dir.glob("frethmm_run_manifest_*.json"))
+    assert len(manifests) == 1
+    manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
+    assert manifest["command"] == "events"
+    assert manifest["inputs"][0]["name"] == classified.name
+    assert {Path(output["path"]).name for output in manifest["outputs"]} == {
+        "event_details.csv",
+        "event_summary.csv",
+        "event_stats_overall.csv",
+    }
 
 
 def test_cli_events_files_mode(tmp_path):
@@ -121,3 +131,28 @@ def test_cli_events_tail_off_threshold(tmp_path):
     ])
     summary_exclude = _read_csv(out_exclude / "event_summary.csv")
     assert summary_exclude[0]["tail_off_excluded"] == "True"
+
+
+def test_cli_events_and_dwell_stats_write_rows_per_multistage_phase(tmp_path):
+    classified = tmp_path / "three_classified.csv"
+    with classified.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["time", "classified_mean"])
+        writer.writeheader()
+        for frame, value in enumerate([0.9, 0.9, 0.5, 0.5, 0.9, 0.9, 0.5, 0.5, 0.2, 0.2, 0.5, 0.5]):
+            writer.writerow({"time": frame, "classified_mean": value})
+
+    events_dir = tmp_path / "events"
+    _run_events_cli(["--files", str(classified), "--output-dir", str(events_dir)])
+    details = _read_csv(events_dir / "event_details.csv")
+    summary = _read_csv(events_dir / "event_summary.csv")
+    assert {row["event_source_type"] for row in details} >= {"normal_on", "normal_off"}
+    assert {row["stage_state_index"] for row in summary} == {"1", "2"}
+
+    stats_dir = tmp_path / "stats"
+    completed = subprocess.run(
+        [sys.executable, "-m", "frethmm.app.cli", "dwell-stats", "--input", str(events_dir / "event_details.csv"), "--output-dir", str(stats_dir)],
+        cwd=REPO_ROOT, check=True, capture_output=True, text=True,
+    )
+    dwell_summary = _read_csv(stats_dir / "dwell_stats_summary.csv")
+    assert completed.returncode == 0
+    assert {row["stage_state_index"] for row in dwell_summary} == {"1", "2"}

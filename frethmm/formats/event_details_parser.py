@@ -39,7 +39,7 @@ def read_event_details(filepath: Union[str, Path]) -> list[Event]:
         reader = csv.DictReader(handle)
         rows = list(reader)
 
-    required = set(DETAIL_FIELDS)
+    required = set(DETAIL_FIELDS[:12])
     present = set(reader.fieldnames or [])
     missing = required - present
     if missing:
@@ -63,6 +63,14 @@ def read_event_details(filepath: Union[str, Path]) -> list[Event]:
                 end_frame=_to_int(row["end_frame"]),
                 excluded=row["excluded"].strip().lower() in {"true", "1"},
                 exclude_reason=row["exclude_reason"],
+                stage_state_index=_to_int(row["stage_state_index"])
+                if "stage_state_index" in present else -1,
+                stage_state_mean=float(row["stage_state_mean"])
+                if "stage_state_mean" in present else float("nan"),
+                off_state_index=_to_int(row["off_state_index"])
+                if "off_state_index" in present else -1,
+                event_source_type=row["event_source_type"]
+                if "event_source_type" in present else f"normal_{row['event_type'].lower()}",
             )
         )
     return events
