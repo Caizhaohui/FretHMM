@@ -180,6 +180,9 @@ def fit_signal_hmm(
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             model.fit(obs_2d)
+            zero_rows = np.sum(model.transmat_, axis=1) <= 0
+            if np.any(zero_rows):
+                model.transmat_[zero_rows] = 1.0 / n_states
             converged = bool(getattr(model, "monitor_", None) and model.monitor_.converged)
             if converged:
                 all_unconverged = False
@@ -294,48 +297,48 @@ def trim_trace_after_low_state_tail(
     first_pass_result: ClassificationResult,
     duration_seconds: float,
 ) -> tuple[SignalTrace, Optional[float]]:
-    """Trim only a persistent *terminal* lowest-state run.
-
-    A low state can occur naturally in the middle of a trace. Treating the
-    first long low segment as a bleaching tail discards valid signal and can
-    leave too little data for the second fit. The trim therefore applies only
-    when the final Viterbi state is the lowest state and that terminal run has
-    lasted at least ``duration_seconds``.
-    """
     lowest_state = int(np.argmin(first_pass_result.state_means))
     state_path = first_pass_result.state_path
-    if len(state_path) == 0 or int(state_path[-1]) != lowest_state:
-        return trace, None
+    run_start_index = 0
+    while run_start_index < len(state_path):
+        if int(state_path[run_start_index]) != lowest_state:
+            run_start_index += 1
+            continue
 
-    run_start_index = len(state_path) - 1
-    while run_start_index > 0 and int(state_path[run_start_index - 1]) == lowest_state:
-        run_start_index -= 1
+        run_end_index = run_start_index
+        while (
+            run_end_index + 1 < len(state_path)
+            and int(state_path[run_end_index + 1]) == lowest_state
+        ):
+            run_end_index += 1
 
-    cutoff_time = float(trace.time[run_start_index] + duration_seconds)
-    if trace.time[-1] < cutoff_time:
-        return trace, None
+        cutoff_time = float(trace.time[run_start_index] + duration_seconds)
+        if trace.time[run_end_index] >= cutoff_time:
+            keep_mask = trace.time <= cutoff_time
+            if np.all(keep_mask):
+                return trace, cutoff_time
 
-    keep_mask = trace.time <= cutoff_time
-    if np.all(keep_mask):
-        return trace, cutoff_time
+            return (
+                SignalTrace(
+                    time=trace.time[keep_mask].copy(),
+                    signal=trace.signal[keep_mask].copy(),
+                    observations=trace.observations[keep_mask].copy(),
+                    filepath=trace.filepath,
+                    mode=trace.mode,
+                    channel_1=trace.channel_1[keep_mask].copy() if trace.channel_1 is not None else None,
+                    channel_2=trace.channel_2[keep_mask].copy() if trace.channel_2 is not None else None,
+                    derived_signal=(
+                        trace.derived_signal[keep_mask].copy()
+                        if trace.derived_signal is not None
+                        else None
+                    ),
+                ),
+                cutoff_time,
+            )
 
-    return (
-        SignalTrace(
-            time=trace.time[keep_mask].copy(),
-            signal=trace.signal[keep_mask].copy(),
-            observations=trace.observations[keep_mask].copy(),
-            filepath=trace.filepath,
-            mode=trace.mode,
-            channel_1=trace.channel_1[keep_mask].copy() if trace.channel_1 is not None else None,
-            channel_2=trace.channel_2[keep_mask].copy() if trace.channel_2 is not None else None,
-            derived_signal=(
-                trace.derived_signal[keep_mask].copy()
-                if trace.derived_signal is not None
-                else None
-            ),
-        ),
-        cutoff_time,
-    )
+        run_start_index = run_end_index + 1
+
+    return trace, None
 
 
 def process_trace_file(

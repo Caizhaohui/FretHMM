@@ -7,18 +7,19 @@ dwell-time analysis. It is the in-package successor to the standalone
 
 State semantics
 ---------------
-A two-state trace uses the legacy high=ON, low=OFF rule. For three or more
-states, every non-lowest state defines an independent stage. A descent through
-one or more lower states is OFF when it later returns to the original stage,
-regardless of duration. The classified HMM path, rather than the raw
-fluorescence, is the sole source of event boundaries.
+A two-state trace treats high fluorescence as ON. A low segment is OFF only
+when the trace returns to high fluorescence; a terminal low segment represents
+permanent loss of activity and is not emitted. For three or more states, every
+non-lowest state defines an independent stage. A descent through one or more
+lower states is OFF when it later returns to the original stage, regardless of
+duration. The classified HMM path, rather than the raw fluorescence, is the
+sole source of event boundaries.
 
 Tail-off exclusion
 -------------------
-Photobleached tails typically appear as a long final OFF run. Mirroring the
-original script, the *last* event is flagged ``excluded=True`` when it is OFF
-and lasts at least ``tail_off_threshold_seconds``. The event is still listed in
-the output (for transparency) but excluded from the ON/OFF summary statistics.
+The legacy terminal-OFF threshold remains accepted for command compatibility,
+but two-state terminal low segments are omitted rather than recorded and later
+excluded.
 """
 
 from __future__ import annotations
@@ -98,8 +99,8 @@ def extract_events(
     source_file:
         File name used to tag each emitted :class:`Event` (metadata only).
     tail_off_threshold_seconds:
-        If the final event is OFF and lasts at least this long, it is flagged
-        ``excluded`` (still listed, but omitted from summary statistics).
+        Retained for CLI compatibility. Terminal low segments in two-state
+        traces are omitted regardless of this value.
     """
     if len(state_path) == 0:
         return []
@@ -107,55 +108,63 @@ def extract_events(
     if len(state_means) > 2:
         return _extract_multistage_events(state_path, state_means, times, source_file)
 
+    _ = tail_off_threshold_seconds
     on_state = int(np.argmax(state_means))
-    dt = _estimate_dt(times)
-    type_counts = {"ON": 0, "OFF": 0}
+    boundaries = np.flatnonzero(np.diff(state_path) != 0) + 1
+    starts = np.concatenate((np.array([0]), boundaries))
+    stops = np.concatenate((boundaries - 1, np.array([len(state_path) - 1])))
     events: list[Event] = []
+    on_event_count = 0
+    off_event_count = 0
 
-    start_index = 0
-    current_value = int(state_path[0])
-    current_event_type: str = "ON" if _is_on_state(on_state, current_value) else "OFF"
-    for index in range(1, len(state_path) + 1):
-        if index == len(state_path):
-            next_event_type = current_event_type
-            boundary = True
-        else:
-            next_event_type = "ON" if _is_on_state(on_state, int(state_path[index])) else "OFF"
-            boundary = next_event_type != current_event_type
-        if not boundary:
+    for run_index, start_frame in enumerate(starts):
+        state_index = int(state_path[start_frame])
+        if not _is_on_state(on_state, state_index):
             continue
-
-        end_index = index - 1
-        type_counts[current_event_type] += 1
-        start_time = float(times[start_index])
-        end_time = float(times[end_index])
-        duration_seconds = end_time - start_time + dt
+        on_event_count += 1
+        end_frame = int(stops[run_index])
+        start_time = float(times[start_frame])
+        end_time = float(times[end_frame])
         events.append(
             Event(
                 source_file=source_file,
-                event_label=f"{current_event_type}_{type_counts[current_event_type]}",
-                event_type=current_event_type,
-                event_index=type_counts[current_event_type],
-                state_value=float(state_means[current_value]),
+                event_label=f"ON_{on_event_count}",
+                event_type="ON",
+                event_index=on_event_count,
+                state_value=float(state_means[state_index]),
                 start_time=start_time,
                 end_time=end_time,
-                duration_seconds=duration_seconds,
-                start_frame=start_index,
-                end_frame=end_index,
+                duration_seconds=end_time - start_time + _estimate_dt(times),
+                start_frame=int(start_frame),
+                end_frame=end_frame,
                 excluded=False,
                 exclude_reason="",
             )
         )
-        if index < len(state_path):
-            start_index = index
-            current_value = int(state_path[index])
-            current_event_type = next_event_type
-
-    if events:
-        last_event = events[-1]
-        if last_event.event_type == "OFF" and last_event.duration_seconds >= tail_off_threshold_seconds:
-            last_event.excluded = True
-            last_event.exclude_reason = f"terminal_off_gte_{tail_off_threshold_seconds:g}s"
+        next_run_index = run_index + 1
+        if next_run_index + 1 >= len(starts) or not _is_on_state(on_state, int(state_path[starts[next_run_index + 1]])):
+            continue
+        off_start_frame = int(starts[next_run_index])
+        off_end_frame = int(stops[next_run_index])
+        off_event_count += 1
+        off_start_time = float(times[off_start_frame])
+        off_end_time = float(times[off_end_frame])
+        events.append(
+            Event(
+                source_file=source_file,
+                event_label=f"OFF_{off_event_count}",
+                event_type="OFF",
+                event_index=off_event_count,
+                state_value=float(state_means[int(state_path[off_start_frame])]),
+                start_time=off_start_time,
+                end_time=off_end_time,
+                duration_seconds=off_end_time - off_start_time + _estimate_dt(times),
+                start_frame=off_start_frame,
+                end_frame=off_end_frame,
+                excluded=False,
+                exclude_reason="",
+            )
+        )
 
     return events
 

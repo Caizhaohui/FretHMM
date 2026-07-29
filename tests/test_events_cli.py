@@ -36,7 +36,7 @@ def _make_classified(tmp_path: Path, *, n_init: int = 1) -> Path:
     return tmp_path / "synthetic_classified.csv"
 
 
-def _run_events_cli(args: list[str]) -> subprocess.CompletedProcess:
+def _run_events_cli(args: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, "-m", "frethmm.app.cli", "events", *args],
         cwd=REPO_ROOT,
@@ -46,12 +46,12 @@ def _run_events_cli(args: list[str]) -> subprocess.CompletedProcess:
     )
 
 
-def _read_csv(path: Path) -> list[dict]:
+def _read_csv(path: Path) -> list[dict[str, str]]:
     with path.open("r", encoding="utf-8", newline="") as handle:
         return list(csv.DictReader(handle))
 
 
-def test_cli_events_input_dir_writes_three_tables(tmp_path):
+def test_cli_events_input_dir_writes_three_tables(tmp_path: Path):
     """``--input-dir`` produces all three output tables with ON/OFF rows."""
     classified = _make_classified(tmp_path)
     out_dir = tmp_path / "events"
@@ -86,7 +86,7 @@ def test_cli_events_input_dir_writes_three_tables(tmp_path):
     }
 
 
-def test_cli_events_files_mode(tmp_path):
+def test_cli_events_files_mode(tmp_path: Path):
     """``--files`` mode works the same as ``--input-dir``."""
     _make_classified(tmp_path)
     out_dir = tmp_path / "events"
@@ -101,8 +101,7 @@ def test_cli_events_files_mode(tmp_path):
     assert (out_dir / "event_stats_overall.csv").exists()
 
 
-def test_cli_events_tail_off_threshold(tmp_path):
-    """A high threshold keeps the final OFF; a low threshold excludes it."""
+def test_cli_events_omits_terminal_low_regardless_of_legacy_threshold(tmp_path: Path):
     # Build a trace that ends in a long OFF run.
     trace = make_synthetic_trace(
         means=[0.8, 0.2], durations=[50, 400], noise=0.05, seed=2,
@@ -112,7 +111,6 @@ def test_cli_events_tail_off_threshold(tmp_path):
     write_classified_csv(trace, result, tmp_path)
     classified = tmp_path / "tail_classified.csv"
 
-    # High threshold (1000s): the 400s OFF tail is NOT excluded.
     out_keep = tmp_path / "keep"
     _run_events_cli([
         "--files", str(classified),
@@ -121,8 +119,8 @@ def test_cli_events_tail_off_threshold(tmp_path):
     ])
     summary_keep = _read_csv(out_keep / "event_summary.csv")
     assert summary_keep[0]["tail_off_excluded"] == "False"
+    assert summary_keep[0]["off_event_count"] == "0"
 
-    # Low threshold (10s): the 400s OFF tail IS excluded.
     out_exclude = tmp_path / "exclude"
     _run_events_cli([
         "--files", str(classified),
@@ -130,10 +128,11 @@ def test_cli_events_tail_off_threshold(tmp_path):
         "--tail-off-threshold-seconds", "10",
     ])
     summary_exclude = _read_csv(out_exclude / "event_summary.csv")
-    assert summary_exclude[0]["tail_off_excluded"] == "True"
+    assert summary_exclude[0]["tail_off_excluded"] == "False"
+    assert summary_exclude[0]["off_event_count"] == "0"
 
 
-def test_cli_events_and_dwell_stats_write_rows_per_multistage_phase(tmp_path):
+def test_cli_events_and_dwell_stats_write_rows_per_multistage_phase(tmp_path: Path):
     classified = tmp_path / "three_classified.csv"
     with classified.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=["time", "classified_mean"])

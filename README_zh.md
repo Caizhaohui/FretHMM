@@ -12,7 +12,7 @@
 | 数据模式 | 自动检测 / 单通道信号 / 双通道 Donor-Acceptor（自动计算 FRET 效率） |
 | 批量处理 | 多文件并行（`ProcessPoolExecutor`），支持目录扫描与多进程 |
 | Review Grid | 批量分类 + 分页多面板 PNG 可视化审查，快速筛查分类质量 |
-| 低态尾部裁剪 | 两遍 HMM 拟合，自动识别并裁剪持续低信号尾部（如光漂白态） |
+| 最低状态窗口过滤 | 两遍 HMM 拟合，前向识别第一个持续最低状态窗口并删除后续信号 |
 | CLI | `run`、`tdp`、`review-grid`、`events`、`dwell-stats`、`gui` 六个子命令 |
 | GUI | CustomTkinter 界面，深色/浅色主题，中英文切换，后台线程分析，支持批量 review grid 导出 |
 | 输出格式 | `*_classified.csv`、`*_summary.json`、`*report.dat`、`*path.dat`、`*dwell.dat`（GUI 可勾选） |
@@ -67,7 +67,7 @@ frethmm run --files data.csv --states 2 --guesses "0.3,0.7"
 # 指定单通道模式及信号列
 frethmm run --files data.csv --states 2 --mode single_channel --signal-column 1
 
-# 使用低态尾部裁剪（裁剪持续 ≥ 5 秒的低信号尾部后重新分类）
+# 使用最低状态窗口过滤（保留至首个持续 ≥ 5 秒的最低状态窗口后重新分类）
 frethmm run --files trace.csv --states 2 --low-state-tail-trim-seconds 5.0
 
 # 只输出主结果 classified.csv
@@ -91,7 +91,7 @@ frethmm run --files data.csv --states 3 -v
 | `--workers` | 1 | 并行工作进程数（>1 时启用多进程批处理） |
 | `--mode` | auto | 数据模式：`auto`（自动检测）/ `paired_channel`（双通道）/ `single_channel`（单通道） |
 | `--signal-column` | 1 | 单通道模式下选择的信号列索引（1-based，第 1 列为 Time 之后的列） |
-| `--low-state-tail-trim-seconds` | 无 | 低态尾部裁剪阈值（秒），启用两遍拟合（详见[数据过滤](#数据过滤低态尾部裁剪)） |
+| `--low-state-tail-trim-seconds` | 无 | 最低状态窗口时长（秒）；参数名为兼容旧版而保留（详见下文“数据过滤”） |
 | `--n-init` | 10 | 确定性多次启动 Baum-Welch 的次数，取对数似然最高的结果（填 `1` 可复现旧版单次拟合） |
 | `--min-states` | 2 | BIC 选择的最小状态数（仅 `--states auto` 时生效） |
 | `--max-states` | 6 | BIC 选择的最大状态数（仅 `--states auto` 时生效） |
@@ -117,7 +117,7 @@ frethmm review-grid --input-dir ./traces/ --output review.png --states 3 --rows 
 frethmm review-grid --input-dir ./traces/ --output review.png --states 2 \
     --guesses "0.2,0.8" --output-dir ./classified/
 
-# 结合低态尾部裁剪
+# 结合最低状态窗口过滤
 frethmm review-grid --input-dir ./traces/ --output review.png --states 2 \
     --low-state-tail-trim-seconds 5.0
 
@@ -140,7 +140,7 @@ frethmm review-grid --input-dir ./traces/ --output review.png --states 2 \
 | `--workers` | 1 | 并行工作进程数 |
 | `--mode` | auto | 数据模式：auto / paired_channel / single_channel |
 | `--signal-column` | 1 | 单通道模式下的信号列索引 |
-| `--low-state-tail-trim-seconds` | 无 | 低态尾部裁剪阈值（秒） |
+| `--low-state-tail-trim-seconds` | 无 | 最低状态窗口时长（秒，保留旧参数名） |
 | `--n-init` | 10 | 确定性多次启动拟合次数（填 `1` 复现旧版单次拟合） |
 | `--min-states` | 2 | BIC 选择的最小状态数（仅 `--states auto` 时生效） |
 | `--max-states` | 6 | BIC 选择的最大状态数（仅 `--states auto` 时生效） |
@@ -173,7 +173,7 @@ frethmm tdp --input-dir ./results/ --exposure 0.1 --states 3 --output tdp.png
 
 #### events — ON/OFF 事件分析
 
-从 `*_classified.csv`（`run` 的主输出）中提取离散的 ON/OFF 事件。**最高均值态视为 ON，其余所有态视为 OFF** —— 对 2 态轨迹即自然的"高值 = ON"规则，对 3 态及以上则推广为"仅最高态算 ON"。末尾较长的 OFF 段（如光漂白尾部）会被标记为 `excluded`，不纳入停留时间统计，但仍会列在输出中以便审计。
+从 `*_classified.csv`（`run` 的主输出）中提取离散的 ON/OFF 事件。对 2 态轨迹，高值荧光为 **ON**；低值仅在随后恢复高值时（`高 → 低 → 高`）才是 **OFF**，末尾未恢复的低值表示蛋白永久失活，不写入事件表。对 3 态及以上，每个非最低态独立作为阶段统计，只有回到原阶段的下降段才计为 OFF。
 
 ```bash
 # 批量：扫描目录中的所有 *_classified.csv
@@ -182,7 +182,7 @@ frethmm events --input-dir ./results/ --output-dir ./events/
 # 处理指定文件
 frethmm events --files trace1_classified.csv trace2_classified.csv --output-dir ./events/
 
-# 调整末尾 OFF 排除阈值（默认 100 秒）
+# 兼容参数：末尾低值会被省略，不会记录为 OFF
 frethmm events --input-dir ./results/ --tail-off-threshold-seconds 250 --output-dir ./events/
 ```
 
@@ -193,14 +193,14 @@ frethmm events --input-dir ./results/ --tail-off-threshold-seconds 250 --output-
 | `--input-dir` | — | 含 `*_classified.csv` 的目录（与 `--files` 二选一，必填） |
 | `--files` | — | 单个或多个 `*_classified.csv` 路径（与 `--input-dir` 二选一，必填） |
 | `--output-dir` | — | 输出目录（必填） |
-| `--tail-off-threshold-seconds` | 100.0 | 末尾事件为 OFF 且持续至少该秒数时排除 |
+| `--tail-off-threshold-seconds` | 100.0 | 兼容参数；末尾低值会被省略，不会记录为 OFF |
 
 每次运行写出三张 CSV 表：
 
 | 文件 | 说明 |
 |------|------|
 | `event_details.csv` | 每个事件一行：源文件、类型（ON/OFF）、序号、状态值、起止时间与帧、时长、是否排除 |
-| `event_summary.csv` | 每个源文件一行：ON/OFF 计数、总时长与平均停留时间、末尾 OFF 排除状态 |
+| `event_summary.csv` | 每个源文件一行：ON/OFF 计数、总时长与平均停留时间 |
 | `event_stats_overall.csv` | 跨文件汇总：事件计数、总/平均 ON 与 OFF 时长 |
 
 #### dwell-stats — 停留时间统计 + 速率常数拟合
@@ -259,10 +259,12 @@ frethmm gui
   - **设置 (Settings)**：HMM 参数设置对话框、语言切换（English / 中文）、界面风格（明亮 / 暗黑 / 跟随系统）
   - **帮助 (Help)**：关于对话框
 - **文件选择**：通过按钮或菜单选择 `.csv` / `.dat` 轨迹文件，或指定输入目录批量处理
-- **状态文件夹批处理**：新增"按状态分组的文件夹批处理"面板，可同时添加多个文件夹并为每个文件夹指定不同的状态数、数据模式和信号列
+- **状态文件夹批处理**：可同时添加多个原始轨迹文件夹，并为每个文件夹指定状态数、数据模式和信号列；默认自动输出到相邻的 `<文件夹>_output`
 - **参数面板**：状态数、初始猜测值、最大迭代次数、容差、并行数、数据模式、信号列（与输出面板并排显示）
 - **输出选项**：GUI 新增输出文件勾选框，可自由选择输出 classified.csv / summary.json / report.dat / path.dat / dwell.dat
-- **Review Grid 区块**：专用区域设置行数、列数和输出文件名，点击"Generate Review Grid"按钮一键生成可视化审查图
+- **Review Grid 区块**：点击"Generate Review Grid"后，自动分类所选原始文件夹，并将分页审查拼图与分类 CSV 保存至各自的 `<文件夹>_output`
+- **人工审查流程**：在审查图中确认分类质量后，删除不合适的 `*_classified.csv`；再在 ON/OFF 区块选择人工审查后的 `<文件夹>_output`，结果默认保存为 `<文件夹>_output_ONOFF`
+- **输出冲突处理**：文件夹运行前可选择覆盖已有输出、取消整批任务，或新建独立的 `_v2`、`_v3` 等版本目录
 - **运行面板**：可折叠的右侧运行面板（Show/Hide Runtime），实时显示分析状态、进度、运行汇总和最近输出路径
 - **结果详情**：选中结果表格中的文件后，右侧面板展示完整拟合指标（状态数、log_prob、状态均值、sigma）和警告信息
 - **进度条**：实时显示分析任务完成进度
@@ -359,9 +361,9 @@ frethmm run --input-dir ./traces/ --states auto --min-states 2 --max-states 5 --
 
 ## 数据过滤
 
-### 低态尾部裁剪（Low-State Tail Trimming）
+### 最低状态窗口过滤（Lowest-State Window Filtering）
 
-**问题背景：** 在单分子荧光实验中，轨迹末尾常出现持续的低信号段（如光漂白态、荧光分子失活）。这些尾部数据不属于感兴趣的构象状态，但会被 HMM 当作一个额外的低均值状态，干扰对真实状态的正确分类。
+**问题背景：** 单分子荧光轨迹中持续的最低值信号可能表示光漂白或荧光团失活。保留该窗口之后的数据会干扰对具有生物学意义状态的分类。
 
 **两遍拟合工作流：**
 
@@ -378,18 +380,18 @@ frethmm run --input-dir ./traces/ --states auto --min-states 2 --max-states 5 --
                                         └─────────────┘
 ```
 
-1. **第一遍分类**：对完整轨迹进行 HMM 拟合，得到 Viterbi 状态路径
-2. **定位最低态**：找到均值最低的状态
-3. **检测持续段**：沿时间轴扫描，寻找最低态首次连续出现超过 `--low-state-tail-trim-seconds` 秒的位置
-4. **截断数据**：在该时间点截断，丢弃尾部数据
-5. **第二遍分类**：对截断后的数据重新运行 HMM 拟合，获得更干净的分类结果
+1. **第一遍分类**：对完整轨迹进行 HMM 拟合，得到 Viterbi 状态路径。
+2. **定位最低态**：找到均值最低的状态。
+3. **前向扫描**：从 `0 s` 开始，寻找第一个持续达到 `--low-state-tail-trim-seconds` 的最低状态连续窗口。
+4. **截断数据**：保留至“连续窗口起点 + 设置秒数”（含该时刻），删除其后的所有信号。
+5. **第二遍分类**：对保留的数据重新进行 HMM 拟合，得到最终分类结果。
 
 > **注意：** 如果最低态从未连续出现超过阈值时间，则不执行截断，保留第一遍的分类结果。
 
 **CLI 示例：**
 
 ```bash
-# 单文件：裁剪持续 ≥ 5 秒的低信号尾部
+# 单文件：保留至第一个持续达到 5 秒的最低状态窗口
 frethmm run --files trace.csv --states 2 --low-state-tail-trim-seconds 5.0
 
 # 批量处理：3 秒阈值，4 个并行进程
@@ -414,7 +416,7 @@ frethmm review-grid --input-dir ./traces/ --output review.png --states 2 \
 - `low_state_tail_cutoff_time`：实际截断时间点（`null` 表示未触发裁剪）
 - `low_state_tail_kept_frames`：裁剪后保留的帧数
 
-**GUI 使用：** 在 GUI 的输出面板中找到"低态尾部裁剪（秒）"输入框，输入阈值后点击 Run Analysis 即可。所有文件和文件夹批处理任务都会应用该裁剪设置。
+**GUI 使用：** GUI 中的“最低状态窗口(秒)”默认值为 `250`；留空即可禁用过滤。该设置会应用于直接分析、文件夹批处理和 Review Grid 生成。
 
 ## 输入格式
 
@@ -533,10 +535,19 @@ python build_exe.py --onefile
 ```
 
 构建产物为独立的 Windows GUI 可执行文件，无需 Python 环境。目录模式还会生成
-`dist/FretHMM.zip`、SHA-256 校验文件和 JSON 发布清单。可使用
-`dist/FretHMM/FretHMM.exe --version` 验证 EXE 启动路径而不打开 GUI。
+`dist/FretHMM.zip`、SHA-256 校验文件和 JSON 发布清单。单文件构建产物为
+`dist/FretHMM.exe`，可使用 `dist/FretHMM.exe --version` 验证而不打开 GUI。
 
 ## 更新日志
+
+### v1.5.0（2026-07-29）
+
+批量审查工作流、多状态事件统计与最低状态窗口过滤：
+
+- **GUI 工作流**：支持多个原始输入文件夹与自动生成的 `<文件夹>_output` 目录、每个文件夹各自的审查拼图、输出冲突处理（覆盖 / 取消 / 新版本），并新增人工审查后分类数据的专用 ON/OFF 输入目录；ON/OFF 结果默认输出到 `<文件夹>_output_ONOFF`。
+- **多状态 ON/OFF 统计**：2 态轨迹统计高态 ON 与恢复后的低态 OFF；对 3 态及以上，每个非最低活性阶段独立统计，只有回到同一阶段的下降才计为 OFF。末端无法恢复的低态不计入事件。
+- **最低状态窗口过滤**：以从 `0 s` 开始的前向扫描替代仅末端裁剪；找到第一个达到设定时长（默认 `250 s`）的最低状态连续窗口后，仅保留该窗口起点加时长之前的数据并重新拟合。
+- **发布产物**：发布 Windows 单文件 `FretHMM.exe`，并提供 SHA-256 校验文件和 JSON 版本清单。
 
 ### v1.4.0（候选发布）
 

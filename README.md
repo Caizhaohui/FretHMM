@@ -12,7 +12,7 @@ A single-molecule time-series Hidden Markov Model (HMM) state classification too
 | Data Modes | Auto-detect / Single-channel signal / Dual-channel Donor-Acceptor (auto-computes FRET efficiency) |
 | Batch Processing | Multi-file parallel processing (`ProcessPoolExecutor`), directory scanning with multi-worker support |
 | Review Grid | Batch classification + paginated multi-panel PNG visual review for quick quality screening |
-| Low-State Tail Trimming | Two-pass HMM fitting that automatically identifies and trims persistent low-signal tails (e.g., photobleached states) |
+| Lowest-State Window Filtering | Two-pass HMM fitting that scans forward for the first persistent lowest-state window and discards later signal |
 | CLI | Six subcommands: `run`, `tdp`, `review-grid`, `events`, `dwell-stats`, `gui` |
 | GUI | CustomTkinter interface with dark/light themes, English/Chinese switching, threaded background analysis, and batch review grid export |
 | Output Formats | `*_classified.csv`, `*_summary.json`, `*report.dat`, `*path.dat`, `*dwell.dat` (selectable in GUI) |
@@ -67,7 +67,7 @@ frethmm run --files data.csv --states 2 --guesses "0.3,0.7"
 # Specify single-channel mode and signal column
 frethmm run --files data.csv --states 2 --mode single_channel --signal-column 1
 
-# Use low-state tail trimming (trim persistent low-signal tails >= 5 seconds, then re-classify)
+# Use lowest-state window filtering (keep through the first 5-second lowest-state window, then re-classify)
 frethmm run --files trace.csv --states 2 --low-state-tail-trim-seconds 5.0
 
 # Output only classified.csv
@@ -91,7 +91,7 @@ frethmm run --files data.csv --states 3 -v
 | `--workers` | 1 | Number of parallel workers (>1 enables multiprocessing) |
 | `--mode` | auto | Data mode: `auto` / `paired_channel` / `single_channel` |
 | `--signal-column` | 1 | 1-based signal column index after Time for single_channel mode |
-| `--low-state-tail-trim-seconds` | None | Low-state tail trim threshold in seconds (see [Data Filtering](#data-filtering-low-state-tail-trimming)) |
+| `--low-state-tail-trim-seconds` | None | Lowest-state window duration in seconds; the option name is retained for compatibility (see [Data Filtering](#data-filtering-lowest-state-window-filtering)) |
 | `--n-init` | 10 | Number of deterministic multi-start Baum-Welch runs; best log-likelihood wins (use `1` to reproduce the legacy single-fit) |
 | `--min-states` | 2 | Minimum state count for BIC selection (only with `--states auto`) |
 | `--max-states` | 6 | Maximum state count for BIC selection (only with `--states auto`) |
@@ -117,7 +117,7 @@ frethmm review-grid --input-dir ./traces/ --output review.png --states 3 --rows 
 frethmm review-grid --input-dir ./traces/ --output review.png --states 2 \
     --guesses "0.2,0.8" --output-dir ./classified/
 
-# Combined with low-state tail trimming
+# Combined with lowest-state window filtering
 frethmm review-grid --input-dir ./traces/ --output review.png --states 2 \
     --low-state-tail-trim-seconds 5.0
 
@@ -140,7 +140,7 @@ frethmm review-grid --input-dir ./traces/ --output review.png --states 2 \
 | `--workers` | 1 | Number of parallel workers |
 | `--mode` | auto | Data mode: auto / paired_channel / single_channel |
 | `--signal-column` | 1 | Signal column index for single_channel mode |
-| `--low-state-tail-trim-seconds` | None | Low-state tail trim threshold in seconds |
+| `--low-state-tail-trim-seconds` | None | Lowest-state window duration in seconds (legacy option name) |
 | `--n-init` | 10 | Deterministic multi-start count (use `1` for legacy single-fit) |
 | `--min-states` | 2 | Minimum state count for BIC selection (only with `--states auto`) |
 | `--max-states` | 6 | Maximum state count for BIC selection (only with `--states auto`) |
@@ -173,7 +173,7 @@ frethmm tdp --input-dir ./results/ --exposure 0.1 --states 3 --output tdp.png
 
 #### events — ON/OFF Event Analysis
 
-Extract discrete ON/OFF events from `*_classified.csv` files (the primary output of `run`). The highest-mean state is treated as **ON**; all other states are treated as **OFF** — for a 2-state trace this is the natural "high = ON" rule, and for 3+ states it generalises so that only the top state counts as ON. A long terminal OFF run (e.g., a photobleached tail) is flagged `excluded` and omitted from the dwell-time statistics while still being listed for transparency.
+Extract discrete ON/OFF events from `*_classified.csv` files (the primary output of `run`). In a 2-state trace, high fluorescence is **ON** and a low segment is **OFF** only when high fluorescence later recovers (`high → low → high`); a terminal low segment is permanent loss of activity and is omitted. For 3+ states, each non-lowest state is analysed as an independent stage, with a descent counted as OFF only when that original stage recovers.
 
 ```bash
 # Batch: scan a directory of *_classified.csv files
@@ -182,7 +182,7 @@ frethmm events --input-dir ./results/ --output-dir ./events/
 # Process specific files
 frethmm events --files trace1_classified.csv trace2_classified.csv --output-dir ./events/
 
-# Adjust the terminal-OFF exclusion threshold (default: 100 seconds)
+# Legacy compatibility option; terminal low segments are omitted, not counted as OFF
 frethmm events --input-dir ./results/ --tail-off-threshold-seconds 250 --output-dir ./events/
 ```
 
@@ -193,14 +193,14 @@ frethmm events --input-dir ./results/ --tail-off-threshold-seconds 250 --output-
 | `--input-dir` | — | Directory of `*_classified.csv` files (mutually exclusive with `--files`, required) |
 | `--files` | — | One or more `*_classified.csv` paths (mutually exclusive with `--input-dir`, required) |
 | `--output-dir` | — | Output directory (required) |
-| `--tail-off-threshold-seconds` | 100.0 | Exclude the final event when it is OFF and lasts at least this many seconds |
+| `--tail-off-threshold-seconds` | 100.0 | Legacy compatibility option; terminal low segments are omitted rather than recorded as OFF |
 
 Three CSV tables are written per run:
 
 | File | Description |
 |------|-------------|
 | `event_details.csv` | One row per event: source file, type (ON/OFF), index, state value, start/end time and frame, duration, excluded flag |
-| `event_summary.csv` | One row per source file: ON/OFF counts, total and mean dwell times, terminal-OFF exclusion status |
+| `event_summary.csv` | One row per source file: ON/OFF counts, total and mean dwell times |
 | `event_stats_overall.csv` | Aggregate across all files: event counts, total/mean ON and OFF times |
 
 #### dwell-stats — Dwell-Time Statistics + Rate-Constant Fit
@@ -255,10 +255,12 @@ GUI screenshot (v1.0.0, with batch review grid panel):
   - **Settings**: HMM parameters dialog, language switch (English / Chinese), appearance mode (Light / Dark / System)
   - **Help**: About dialog
 - **File selection**: Add `.csv` / `.dat` trace files via buttons or menu, or specify an input directory for batch processing
-- **State folder batches**: Per-folder batch processing panel — add multiple folders, each with its own state count, data mode, and signal column
+- **State folder batches**: Add multiple raw-trace folders, each with its own state count, data mode, and signal column; each folder writes to its adjacent `<folder>_output` directory by default
 - **Parameters panel**: States, initial guesses, max iterations, tolerance, workers, data mode, signal column (displayed alongside output panel)
 - **Output options**: Checkboxes to select output files — classified.csv / summary.json / report.dat / path.dat / dwell.dat
-- **Review Grid section**: Dedicated area for setting rows, columns, and output filename. Click "Generate Review Grid" to produce the visual review image
+- **Review Grid section**: Click "Generate Review Grid" to classify the selected raw folders and save their paginated review images alongside the corresponding classified CSV files in each `<folder>_output` directory
+- **Manual-review workflow**: Inspect each review image, delete unsuitable `*_classified.csv` files, then select the reviewed `<folder>_output` directory in the ON/OFF section; results are written to `<folder>_output_ONOFF`
+- **Output collision handling**: Before a folder run, choose to overwrite existing output, cancel the whole batch, or create an independent `_v2`, `_v3`, … output directory
 - **Runtime panel**: Collapsible right sidebar (Show/Hide Runtime) showing real-time status, progress, run summary, and last output path
 - **Result details**: Select a row in the results table to display full fitting metrics (states, log_prob, state means, sigma) and warnings in the right panel
 - **Progress bar**: Real-time analysis task progress
@@ -369,9 +371,9 @@ When auto-selection runs, `*_summary.json` records the chosen BIC, AIC, and a `m
 
 ## Data Filtering
 
-### Low-State Tail Trimming
+### Lowest-State Window Filtering
 
-**Background:** In single-molecule fluorescence experiments, trace tails often contain persistent low-signal segments (e.g., photobleached states, fluorophore inactivation). These tail artifacts are not genuine conformational states but are treated as an extra low-mean state by HMM, distorting the classification of real states.
+**Background:** In single-molecule fluorescence experiments, a persistent lowest-signal period can indicate photobleaching or fluorophore inactivation. Retaining data after that period can distort classification of the biologically relevant states.
 
 **Two-pass fitting workflow:**
 
@@ -390,18 +392,18 @@ When auto-selection runs, `*_summary.json` records the chosen BIC, AIC, and a `m
                                           └──────────────┘
 ```
 
-1. **First pass classification**: Fit HMM on the full trace to obtain the Viterbi state path
-2. **Identify lowest state**: Find the state with the lowest mean value
-3. **Detect persistent run**: Scan the time axis for the first contiguous segment of the lowest state lasting ≥ `--low-state-tail-trim-seconds`
-4. **Trim data**: Truncate at that time point, discarding tail data
-5. **Second pass classification**: Re-run HMM on the trimmed data for a cleaner classification
+1. **First pass classification**: Fit HMM on the full trace to obtain the Viterbi state path.
+2. **Identify lowest state**: Find the state with the lowest mean value.
+3. **Forward scan**: Starting at `0 s`, locate the first uninterrupted lowest-state run that reaches `--low-state-tail-trim-seconds`.
+4. **Trim data**: Retain samples through `run start + configured seconds` (inclusive) and discard every later sample.
+5. **Second pass classification**: Re-run HMM on the retained trace for the final classification.
 
 > **Note:** If the lowest state never persists beyond the threshold duration, no trimming is performed and the first-pass result is retained.
 
 **CLI examples:**
 
 ```bash
-# Single file: trim persistent low-signal tails >= 5 seconds
+# Single file: retain through the first lowest-state window that reaches 5 seconds
 frethmm run --files trace.csv --states 2 --low-state-tail-trim-seconds 5.0
 
 # Batch: 3-second threshold, 4 parallel workers
@@ -426,7 +428,7 @@ frethmm review-grid --input-dir ./traces/ --output review.png --states 2 \
 - `low_state_tail_cutoff_time`: The actual cutoff time point (`null` if trimming was not triggered)
 - `low_state_tail_kept_frames`: Number of frames retained after trimming
 
-**GUI usage:** In the GUI output panel, find the "Low-state tail trim (seconds)" input field. Enter the threshold value before clicking Run Analysis. The trim setting is applied to all file and folder batch tasks.
+**GUI usage:** The GUI's **Lowest-state window (sec)** field defaults to `250`. Leave it blank to disable filtering. The setting applies to all direct runs and folder batches, including Review Grid generation.
 
 ## Input Format
 
@@ -486,7 +488,7 @@ FretHMM/
 │   │   └── frethmm_logo.png     # Application logo
 │   ├── core/
 │   │   ├── io.py                # File I/O (trace reading + report output)
-│   │   ├── model.py             # HMM engine (Baum-Welch + Viterbi + tail trimming)
+│   │   ├── model.py             # HMM engine (Baum-Welch + Viterbi + lowest-state window filtering)
 │   │   ├── batch.py             # Multi-process batch processor
 │   │   └── postprocess.py       # Classified signal + dwell segments + transition stats
 │   ├── domain/
@@ -550,10 +552,20 @@ python build_exe.py --onefile
 
 The build produces a standalone Windows GUI executable — no Python installation
 required. Directory-mode builds also create `dist/FretHMM.zip`, a SHA-256
-sidecar, and a JSON release manifest. Validate a built executable without
-launching its UI with `dist/FretHMM/FretHMM.exe --version`.
+sidecar, and a JSON release manifest. The single-file build produces
+`dist/FretHMM.exe`; validate it without launching the UI with
+`dist/FretHMM.exe --version`.
 
 ## Changelog
+
+### v1.5.0 (2026-07-29)
+
+Batch review workflow, multi-state event statistics, and lowest-state window filtering:
+
+- **GUI workflow**: supports multiple raw input folders with automatic per-folder `<folder>_output` directories, per-folder review grids, collision choices (overwrite / cancel / versioned output), and a dedicated reviewed-classification folder input for ON/OFF analysis. ON/OFF results are written to `<folder>_output_ONOFF` by default.
+- **Multi-state ON/OFF statistics**: 2-state traces report high-state ON and recovered low-state OFF events. For 3 or more states, every non-lowest activity stage is analysed independently; a descent is an OFF event only if that same stage recovers. Terminal non-recovering low segments are omitted.
+- **Lowest-state window filtering**: replaces terminal-only trimming with a forward scan from `0 s` for the first continuous lowest-state window meeting the configured duration (default `250 s`), then refits only the retained data.
+- **Release artifact**: Windows single-file `FretHMM.exe` is published with a SHA-256 checksum and JSON version manifest.
 
 ### v1.4.0 (release candidate)
 

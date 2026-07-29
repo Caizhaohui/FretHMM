@@ -187,8 +187,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=100.0,
         help=(
-            "Exclude the final event when it is OFF and lasts at least this "
-            "many seconds (default: 100.0)"
+            "Legacy compatibility option; terminal low segments are omitted "
+            "rather than counted as OFF events (default: 100.0)"
         ),
     )
     _ = events.add_argument("--output-dir", type=str, required=True, help="Output directory")

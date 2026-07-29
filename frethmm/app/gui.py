@@ -14,7 +14,7 @@ import unittest
 from dataclasses import dataclass
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
-from typing import Any, Optional
+from typing import Any, Final, Optional
 
 import tkinter as tk
 import customtkinter as ctk
@@ -24,6 +24,12 @@ try:
 except Exception:
     _VERSION = "0.4.0"
 
+from frethmm.app.workflow import (
+    default_onoff_output_dir,
+    default_review_output_dir,
+    versioned_output_dir,
+)
+
 _LOG = "log"
 _PROGRESS = "progress"
 _RESULT = "result"
@@ -31,8 +37,23 @@ _DONE = "done"
 _ERROR = "error"
 _WARNING = "warning"
 _REVIEW_DONE = "review_done"
+DEFAULT_LOW_STATE_TAIL_TRIM_SECONDS: Final = 250.0
 
 _APP_ASSET_DIR = Path(__file__).resolve().parent.parent / "assets"
+
+
+def resolve_event_classified_paths(
+    session_outputs: dict[str, Path], output_dirs: list[Path]
+) -> list[Path]:
+    from frethmm.core.io import find_classified_files
+
+    classified_paths = {
+        path.resolve() for path in session_outputs.values() if path.is_file()
+    }
+    for output_dir in output_dirs:
+        if output_dir.is_dir():
+            classified_paths.update(find_classified_files(output_dir))
+    return sorted(classified_paths, key=lambda path: (path.name, str(path)))
 
 
 def _debug_log_path() -> Path:
@@ -191,11 +212,9 @@ def _review_worker(
 
     try:
         export_options = ExportOptions.classified_only()
-        results = []
+        results_by_output: dict[Path, list[Any]] = {}
+        configs_by_output: dict[Path, Any] = {}
         total = len(tasks)
-        first_output_dir = tasks[0].get("output_dir")
-        first_filepath = Path(tasks[0]["filepath"])
-        out_dir = Path(first_output_dir) if first_output_dir else first_filepath.parent
 
         for i, task in enumerate(tasks):
             if cancel_event.is_set():
@@ -217,24 +236,29 @@ def _review_worker(
                 result_output_dir,
                 export_options=export_options,
             )
-            results.append(result)
+            output_key = result_output_dir or filepath.parent
+            results_by_output.setdefault(output_key, []).append(result)
+            configs_by_output[output_key] = config
             for warning in result.warnings:
                 result_queue.put(_Msg(_WARNING, warning))
 
-        output_path = out_dir / output_name
-        image_paths = plot_review_grid(
-            results,
-            config,
-            output_path,
-            rows=rows,
-            cols=cols,
-        )
+        image_paths: list[Path] = []
+        for output_dir, results in results_by_output.items():
+            image_paths.extend(
+                plot_review_grid(
+                    results,
+                    configs_by_output[output_dir],
+                    output_dir / output_name,
+                    rows=rows,
+                    cols=cols,
+                )
+            )
         result_queue.put(
             _Msg(
                 _REVIEW_DONE,
                 {
                     "image_paths": [str(path) for path in image_paths],
-                    "count": len(results),
+                    "count": total,
                 },
             )
         )
@@ -298,7 +322,7 @@ class _App:
         self._export_report_var = tk.BooleanVar(value=False)
         self._export_path_var = tk.BooleanVar(value=False)
         self._export_dwell_var = tk.BooleanVar(value=False)
-        self._low_state_tail_trim_var = tk.StringVar(value="")
+        self._low_state_tail_trim_var = tk.StringVar(value=f"{DEFAULT_LOW_STATE_TAIL_TRIM_SECONDS:g}")
         self._auto_states_var = tk.BooleanVar(value=False)
         self._n_init_var = tk.IntVar(value=10)
         self._min_states_var = tk.IntVar(value=2)
@@ -306,6 +330,7 @@ class _App:
         self._review_rows_var = tk.IntVar(value=4)
         self._review_cols_var = tk.IntVar(value=8)
         self._review_output_var = tk.StringVar(value="review_grid.png")
+        self._events_input_dir_var = tk.StringVar(value="")
         self._review_image_paths: list[str] = []
         self._events_output_dir: Optional[str] = None
 
@@ -987,6 +1012,28 @@ class _App:
         lbl.pack(anchor=tk.W, padx=10, pady=5)
         self._post_title_label = lbl
 
+        input_row = ctk.CTkFrame(self._post_frame, fg_color="transparent")
+        input_row.pack(fill=tk.X, padx=10, pady=(0, 5))
+        self._events_input_label = ctk.CTkLabel(
+            input_row,
+            text=self._t("label_events_input_folder"),
+            width=130,
+            anchor=tk.W,
+        )
+        self._events_input_label.pack(side=tk.LEFT, padx=(0, 8))
+        self._events_input_entry = ctk.CTkEntry(
+            input_row,
+            textvariable=self._events_input_dir_var,
+        )
+        self._events_input_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
+        self._events_input_browse_btn = ctk.CTkButton(
+            input_row,
+            text=self._t("btn_events_input_folder"),
+            command=self._choose_events_input_folder,
+            width=110,
+        )
+        self._events_input_browse_btn.pack(side=tk.LEFT)
+
         btn_row = ctk.CTkFrame(self._post_frame, fg_color="transparent")
         btn_row.pack(fill=tk.X, padx=10, pady=5)
         for i in range(3):
@@ -995,7 +1042,7 @@ class _App:
         self._btn_events = ctk.CTkButton(
             btn_row,
             text=self._t("btn_extract_events"),
-            command=self._show_events_dialog,
+            command=self._run_reviewed_events,
             width=130,
             fg_color="#00838F",
             hover_color="#006064",
@@ -1024,63 +1071,61 @@ class _App:
 
     # -- Events dialog + runner ------------------------------------------------
 
-    def _show_events_dialog(self) -> None:
-        if not self._classified_outputs:
-            messagebox.showwarning(
-                self._t("dlg_events_title"),
-                self._t("msg_events_no_results"),
-            )
+    def _choose_events_input_folder(self) -> None:
+        folder = filedialog.askdirectory(title=self._t("events_input_dialog_title"))
+        if folder:
+            self._events_input_dir_var.set(folder)
+
+    def _run_reviewed_events(self) -> None:
+        from frethmm.core.io import find_classified_files
+        from frethmm.formats.classified_parser import read_classified_csv
+
+        input_text = self._events_input_dir_var.get().strip()
+        reviewed_dir = Path(input_text)
+        if not input_text or not reviewed_dir.is_dir():
+            messagebox.showwarning(self._t("dlg_events_title"), self._t("msg_events_input_required"))
+            return
+        classified_paths = find_classified_files(reviewed_dir)
+        if not classified_paths:
+            messagebox.showwarning(self._t("dlg_events_title"), self._t("msg_events_input_empty", path=str(reviewed_dir)))
             return
 
-        dlg = ctk.CTkToplevel(self.root)
-        dlg.title(self._t("dlg_events_title"))
-        dlg.geometry("440x200")
-        dlg.resizable(False, False)
-        dlg.transient(self.root)
-        dlg.grab_set()
-        _center_on_parent(dlg, 440, 200)
-
-        frame = ctk.CTkFrame(dlg, corner_radius=0, fg_color="transparent")
-        frame.pack(fill=tk.BOTH, expand=True, padding=20)
-
-        ctk.CTkLabel(frame, text=self._t("dlg_events_output_dir")).grid(
-            row=0, column=0, sticky=tk.W, pady=6,
-        )
-        out_var = tk.StringVar(value=self.output_dir or "")
-        ctk.CTkEntry(frame, textvariable=out_var, width=300).grid(
-            row=0, column=1, padx=(10, 0), pady=6, sticky=tk.W,
-        )
-
-        ctk.CTkLabel(frame, text=self._t("dlg_events_tail_threshold")).grid(
-            row=1, column=0, sticky=tk.W, pady=6,
-        )
-        thresh_var = tk.StringVar(value="100.0")
-        ctk.CTkEntry(frame, textvariable=thresh_var, width=80).grid(
-            row=1, column=1, padx=(10, 0), pady=6, sticky=tk.W,
-        )
-        ctk.CTkLabel(
-            frame, text=self._t("hint_events_tail_threshold"), text_color="#757575",
-        ).grid(row=2, column=1, padx=(10, 0), sticky=tk.W)
-
-        def apply():
-            dlg.destroy()
-            out_dir = out_var.get().strip()
-            if not out_dir:
-                messagebox.showerror(self._t("msg_invalid_params"), "Output directory is required.")
-                return
+        for classified_path in classified_paths:
             try:
-                threshold = float(thresh_var.get().strip())
-            except ValueError:
-                messagebox.showerror(self._t("msg_invalid_params"), "Threshold must be a number.")
+                read_classified_csv(classified_path)
+            except (OSError, ValueError) as exc:
+                messagebox.showerror(
+                    self._t("dlg_events_title"),
+                    self._t(
+                        "msg_events_input_invalid",
+                        path=str(classified_path),
+                        error=str(exc),
+                    ),
+                )
                 return
-            self._run_events(out_dir, threshold)
 
-        btn_frame = ctk.CTkFrame(frame, fg_color="transparent")
-        btn_frame.grid(row=3, column=0, columnspan=2, pady=(16, 0))
-        ctk.CTkButton(btn_frame, text="OK", command=apply, width=90).pack(side=tk.LEFT, padx=6)
-        ctk.CTkButton(btn_frame, text="Cancel", command=dlg.destroy, width=90, fg_color="grey").pack(side=tk.LEFT, padx=6)
+        output_dir = self._prepare_output_directory(default_onoff_output_dir(reviewed_dir))
+        if output_dir is not None:
+            self._run_events(str(output_dir), classified_paths)
 
-    def _run_events(self, output_dir: str, tail_off_threshold_seconds: float) -> None:
+    def _event_classified_paths(self) -> list[Path]:
+        output_dirs: list[Path] = []
+        if self.output_dir:
+            output_dirs.append(Path(self.output_dir))
+        for selected_file in self.selected_files:
+            output_dirs.append(
+                self._default_output_dir_for_file(Path(selected_file))
+            )
+        for job in self.folder_jobs:
+            folder_path = Path(job.folder)
+            output_dirs.append(self._default_output_dir_for_folder(folder_path))
+        return resolve_event_classified_paths(self._classified_outputs, output_dirs)
+
+    def _run_events(
+        self,
+        output_dir: str,
+        classified_paths: list[Path] | None = None,
+    ) -> None:
         import csv as csv_module
 
         from frethmm.core.events import (
@@ -1094,14 +1139,21 @@ class _App:
         all_events = []
         per_file_summaries = []
         multistage_files = 0
-        classified_paths = sorted(self._classified_outputs.values(), key=lambda p: p.name)
-        for cp in classified_paths:
+        paths = classified_paths or self._event_classified_paths()
+        parsed_paths: list[tuple[Path, Any, Any, Any]] = []
+        for classified_path in paths:
             try:
-                sp, sm, times = read_classified_csv(cp)
-                events = extract_events(sp, sm, times, cp.name, tail_off_threshold_seconds=tail_off_threshold_seconds)
-            except Exception as exc:
-                print(f"  ERROR {cp.name}: {exc}")
-                continue
+                state_path, state_means, times = read_classified_csv(classified_path)
+            except (OSError, ValueError) as exc:
+                messagebox.showerror(
+                    self._t("dlg_events_title"),
+                    self._t("msg_events_input_invalid", path=str(classified_path), error=str(exc)),
+                )
+                return
+            parsed_paths.append((classified_path, state_path, state_means, times))
+
+        for cp, sp, sm, times in parsed_paths:
+            events = extract_events(sp, sm, times, cp.name)
             all_events.extend(events)
             if len(sm) > 2:
                 multistage_files += 1
@@ -1113,14 +1165,14 @@ class _App:
         out.mkdir(parents=True, exist_ok=True)
         detail_rows = [event_to_detail_row(e) for e in all_events]
         if multistage_files:
-            overall_rows = summarize_stage_overall(all_events, len(classified_paths))
+            overall_rows = summarize_stage_overall(all_events, len(paths))
             binary_events = [event for event in all_events if event.stage_state_index < 0]
             if binary_events:
-                binary_overall = summarize_overall(binary_events, len(classified_paths))
+                binary_overall = summarize_overall(binary_events, len(paths))
                 binary_overall.update({"stage_state_index": "", "stage_state_mean": "", "off_state_index": ""})
                 overall_rows.append(binary_overall)
         else:
-            overall_rows = [summarize_overall(all_events, len(classified_paths))]
+            overall_rows = [summarize_overall(all_events, len(paths))]
 
         def _w(name, fields, rows):
             p = out / name
@@ -1135,11 +1187,11 @@ class _App:
 
         self._events_output_dir = str(out)
         self._log(
-            self._t("msg_events_done", n=len(classified_paths), dir=str(out)), "success"
+            self._t("msg_events_done", n=len(paths), dir=str(out)), "success"
         )
         messagebox.showinfo(
             self._t("dlg_events_title"),
-            self._t("msg_events_done", n=len(classified_paths), dir=str(out)),
+            self._t("msg_events_done", n=len(paths), dir=str(out)),
         )
 
     # -- Dwell-Stats dialog + runner -------------------------------------------
@@ -1620,6 +1672,9 @@ class _App:
         self._review_output_label.configure(text=self._t("label_review_output"))
         self._review_btn.configure(text=self._t("btn_review_grid"))
         self._cancel_btn.configure(text=self._t("btn_cancel"))
+        self._post_title_label.configure(text=self._t("section_post_processing"))
+        self._events_input_label.configure(text=self._t("label_events_input_folder"))
+        self._events_input_browse_btn.configure(text=self._t("btn_events_input_folder"))
         self._btn_events.configure(text=self._t("btn_extract_events"))
         self._btn_dwell.configure(text=self._t("btn_dwell_stats"))
         self._btn_tdp.configure(text=self._t("btn_tdp_plot"))
@@ -2095,11 +2150,69 @@ class _App:
         ``<input_folder>_output`` suffix. This keeps generated artifacts out of
         raw-data folders while preserving the custom-output-folder override.
         """
-        return folder_path.parent / f"{folder_path.name}_output"
+        return default_review_output_dir(folder_path)
 
     @classmethod
     def _default_output_dir_for_file(cls, source_path: Path) -> Path:
         return cls._default_output_dir_for_folder(source_path.parent)
+
+    def _prepare_output_directory(self, output_dir: Path) -> Path | None:
+        if not output_dir.exists():
+            return output_dir
+        choice = messagebox.askyesnocancel(
+            self._t("dlg_output_exists_title"),
+            self._t("msg_output_exists", path=str(output_dir)),
+        )
+        if choice is None:
+            return None
+        if choice:
+            if not output_dir.is_dir():
+                messagebox.showerror(
+                    self._t("dlg_output_exists_title"),
+                    self._t("msg_output_not_directory", path=str(output_dir)),
+                )
+                return None
+            shutil.rmtree(output_dir)
+            return output_dir
+        return versioned_output_dir(output_dir)
+
+    def _plan_folder_output_dirs(self) -> dict[str, Path] | None:
+        from frethmm.core.io import find_trace_files
+
+        planned: dict[str, Path] = {}
+        overwrite_dirs: list[Path] = []
+
+        for job in self.folder_jobs:
+            folder_path = Path(job.folder)
+            if not find_trace_files(folder_path):
+                continue
+
+            output_dir = self._default_output_dir_for_folder(folder_path)
+            if not output_dir.exists():
+                planned[job.folder] = output_dir
+                continue
+
+            choice = messagebox.askyesnocancel(
+                self._t("dlg_output_exists_title"),
+                self._t("msg_output_exists", path=str(output_dir)),
+            )
+            if choice is None:
+                return None
+            if choice:
+                if not output_dir.is_dir():
+                    messagebox.showerror(
+                        self._t("dlg_output_exists_title"),
+                        self._t("msg_output_not_directory", path=str(output_dir)),
+                    )
+                    return None
+                overwrite_dirs.append(output_dir)
+                planned[job.folder] = output_dir
+            else:
+                planned[job.folder] = versioned_output_dir(output_dir)
+
+        for output_dir in overwrite_dirs:
+            shutil.rmtree(output_dir)
+        return planned
 
     def _export_selected_classified(self) -> None:
         selected_path: Optional[str] = None
@@ -2284,7 +2397,10 @@ class _App:
             n_init=job.n_init,
         )
 
-    def _build_tasks(self) -> list[dict[str, Any]]:
+    def _build_tasks(
+        self,
+        folder_output_dirs: dict[str, Path] | None = None,
+    ) -> list[dict[str, Any]]:
         import pickle
 
         tasks: list[dict[str, Any]] = []
@@ -2323,10 +2439,11 @@ class _App:
                         "warning",
                     )
                     continue
-                job_output_dir = (
-                    str(Path(self.output_dir) / folder_path.name)
-                    if self.output_dir
-                    else str(self._default_output_dir_for_folder(folder_path))
+                job_output_dir = str(
+                    (folder_output_dirs or {}).get(
+                        job.folder,
+                        self._default_output_dir_for_folder(folder_path),
+                    )
                 )
                 for path in files:
                     tasks.append(
@@ -2343,11 +2460,15 @@ class _App:
         if running:
             self._run_btn.configure(state="disabled")
             self._review_btn.configure(state="disabled")
+            self._btn_events.configure(state="disabled")
+            self._events_input_browse_btn.configure(state="disabled")
             self._cancel_btn.configure(state="normal")
             self._set_status("status_running")
         else:
             self._run_btn.configure(state="normal")
             self._review_btn.configure(state="normal")
+            self._btn_events.configure(state="normal")
+            self._events_input_browse_btn.configure(state="normal")
             self._cancel_btn.configure(state="disabled")
             self._progress_bar.set(0)
             self._progress_label.configure(text="")
@@ -2362,7 +2483,10 @@ class _App:
             return
 
         try:
-            tasks = self._build_tasks()
+            folder_output_dirs = self._plan_folder_output_dirs()
+            if folder_output_dirs is None:
+                return
+            tasks = self._build_tasks(folder_output_dirs)
         except Exception as e:
             import traceback
             messagebox.showerror(
@@ -2416,7 +2540,10 @@ class _App:
         self._worker_thread.start()
         self._after_id = self.root.after(80, self._poll_queue)
 
-    def _build_review_tasks(self) -> list[dict[str, Any]]:
+    def _build_review_tasks(
+        self,
+        folder_output_dirs: dict[str, Path] | None = None,
+    ) -> list[dict[str, Any]]:
         import pickle
 
         tasks: list[dict[str, Any]] = []
@@ -2452,10 +2579,11 @@ class _App:
                         "warning",
                     )
                     continue
-                job_output_dir = (
-                    str(Path(self.output_dir) / folder_path.name)
-                    if self.output_dir
-                    else str(self._default_output_dir_for_folder(folder_path))
+                job_output_dir = str(
+                    (folder_output_dirs or {}).get(
+                        job.folder,
+                        self._default_output_dir_for_folder(folder_path),
+                    )
                 )
                 for path in files:
                     tasks.append(
@@ -2476,7 +2604,10 @@ class _App:
             if rows < 1 or cols < 1:
                 raise ValueError("rows and cols must be >= 1")
             output_name = self._review_output_var.get().strip() or self._t("review_default_prefix")
-            tasks = self._build_review_tasks()
+            folder_output_dirs = self._plan_folder_output_dirs()
+            if folder_output_dirs is None:
+                return
+            tasks = self._build_review_tasks(folder_output_dirs)
         except Exception as exc:
             messagebox.showerror(
                 self._t("msg_invalid_params"),

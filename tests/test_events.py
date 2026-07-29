@@ -33,13 +33,12 @@ def _run(state_path, state_means, dt=1.0, threshold=100.0, source="trace.csv"):
 
 
 def test_extract_events_two_state_basic():
-    """OFF, ON, OFF, ON alternation yields four correctly-labelled events."""
     # state 0 (mean 0.2) = OFF, state 1 (mean 0.8) = ON
     events = _run([0, 0, 1, 1, 0, 0, 1, 1], [0.2, 0.8])
 
-    assert len(events) == 4
+    assert len(events) == 3
     assert [(e.event_type, e.event_index) for e in events] == [
-        ("OFF", 1), ("ON", 1), ("OFF", 2), ("ON", 2),
+        ("ON", 1), ("OFF", 1), ("ON", 2),
     ]
     # Each ON event carries the high mean; each OFF the low mean.
     for e in events:
@@ -51,14 +50,12 @@ def test_extract_events_two_state_basic():
     assert all(not e.excluded for e in events)
 
 
-def test_extract_events_two_state_matches_legacy_semantics():
-    """argmax(state_means) is the ON state, equivalent to 'high value = ON'."""
+def test_extract_events_two_state_omits_terminal_low_without_recovery():
     # When the higher-indexed state has the LOWER mean, ON still follows the mean.
     # state 0 (mean 0.9) = ON, state 1 (mean 0.1) = OFF
     events = _run([0, 0, 1, 1], [0.9, 0.1])
-    assert [e.event_type for e in events] == ["ON", "OFF"]
+    assert [e.event_type for e in events] == ["ON"]
     assert events[0].state_value == 0.9
-    assert events[1].state_value == 0.1
 
 
 def test_extract_events_three_state_records_adjacent_high_stage_off_return():
@@ -163,25 +160,11 @@ def test_extract_events_empty_trace():
     assert events == []
 
 
-def test_terminal_off_excluded_when_above_threshold():
-    """A long final OFF run is flagged excluded."""
-    # 2 ON frames, then 200 OFF frames (200s >= threshold 100s).
+def test_terminal_low_is_not_an_off_event_regardless_of_duration():
     path = [1, 1] + [0] * 200
     events = _run(path, [0.2, 0.8], threshold=100.0)
 
-    last = events[-1]
-    assert last.event_type == "OFF"
-    assert last.excluded is True
-    assert "terminal_off_gte_100s" in last.exclude_reason
-
-
-def test_terminal_off_kept_when_below_threshold():
-    """A short final OFF run is not excluded."""
-    path = [1, 1] + [0] * 5  # 5s < 100s
-    events = _run(path, [0.2, 0.8], threshold=100.0)
-
-    assert events[-1].excluded is False
-    assert events[-1].exclude_reason == ""
+    assert [(event.event_type, event.duration_seconds) for event in events] == [("ON", 2.0)]
 
 
 def test_terminal_on_not_excluded_even_if_long():
@@ -209,29 +192,26 @@ def test_summarize_events_per_file_fields():
 
     assert summary["source_file"] == "t.csv"
     assert summary["on_event_count"] == 2
-    assert summary["off_event_count"] == 2
+    assert summary["off_event_count"] == 1
     assert summary["included_on_event_count"] == 2
-    assert summary["included_off_event_count"] == 2
+    assert summary["included_off_event_count"] == 1
     # Each 2-frame segment (dt=1.0): end_time(1.0) - start_time(0.0) + dt(1.0) = 2.0s.
-    # 2 ON events => 4.0s total; likewise OFF.
     assert summary["total_on_time_seconds"] == 4.0
-    assert summary["total_off_time_seconds"] == 4.0
+    assert summary["total_off_time_seconds"] == 2.0
     assert summary["mean_on_time_seconds"] == 2.0
     assert summary["mean_off_time_seconds"] == 2.0
     assert summary["last_event_type"] == "ON"
     assert summary["tail_off_excluded"] is False
 
 
-def test_summarize_events_excludes_tail_off_from_totals():
-    """An excluded terminal OFF does not count toward ON/OFF totals."""
+def test_summarize_events_omits_terminal_low_from_totals():
     path = [1, 1] + [0] * 200
     events = _run(path, [0.2, 0.8], threshold=100.0, source="t.csv")
     summary = summarize_events("t.csv", events)
 
-    # The 200s OFF tail is excluded, so it must not appear in the OFF totals.
-    assert summary["tail_off_excluded"] is True
-    assert summary["off_event_count"] == 1  # still listed
-    assert summary["included_off_event_count"] == 0  # but excluded from stats
+    assert summary["tail_off_excluded"] is False
+    assert summary["off_event_count"] == 0
+    assert summary["included_off_event_count"] == 0
     # Only the 2-frame ON segment contributes to ON time.
     assert summary["total_on_time_seconds"] == 2.0
     assert summary["total_off_time_seconds"] == 0.0
@@ -245,9 +225,9 @@ def test_summarize_overall_aggregates_across_files():
     overall = summarize_overall(all_events, file_count=2)
 
     assert overall["file_count"] == 2
-    assert overall["event_count"] == 4
-    assert overall["included_event_count"] == 4
+    assert overall["event_count"] == 2
+    assert overall["included_event_count"] == 2
     assert overall["included_on_event_count"] == 2
-    assert overall["included_off_event_count"] == 2
+    assert overall["included_off_event_count"] == 0
     assert overall["total_on_time_seconds"] == 4.0  # 2 files * 2s ON each
-    assert overall["total_off_time_seconds"] == 4.0
+    assert overall["total_off_time_seconds"] == 0.0
