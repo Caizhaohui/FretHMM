@@ -9,15 +9,19 @@ import pydoc
 import queue
 import shutil
 import sys
+import tempfile
 import threading
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
-from typing import Any, Final, Optional
+from typing import TYPE_CHECKING, Any, Final, Optional, assert_never
 
 import tkinter as tk
 import customtkinter as ctk
+
+if TYPE_CHECKING:
+    from frethmm.app.gui_pool import ClassificationTask
 
 try:
     from frethmm import __version__ as _VERSION
@@ -37,9 +41,19 @@ _DONE = "done"
 _ERROR = "error"
 _WARNING = "warning"
 _REVIEW_DONE = "review_done"
+_CANCELLED = "cancelled"
+DEFAULT_GUI_WORKERS: Final = 2
 DEFAULT_LOW_STATE_TAIL_TRIM_SECONDS: Final = 250.0
 
 _APP_ASSET_DIR = Path(__file__).resolve().parent.parent / "assets"
+
+
+def _effective_gui_workers(
+    requested: int,
+    task_count: int,
+    cpu_count: int | None,
+) -> int:
+    return min(requested, task_count, max(1, cpu_count or 1))
 
 
 def resolve_event_classified_paths(
@@ -111,163 +125,248 @@ class _Msg:
         self.payload = payload
 
 
+class _ReviewPublication:
+    __slots__ = ("committed", "lock")
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.committed = False
+
+
 def _worker(
-    tasks: list[dict[str, Any]],
+    tasks: list[ClassificationTask],
+    workers: int,
     cancel_event: threading.Event,
     result_queue: queue.Queue[_Msg],
 ) -> None:
-    import pickle
     import traceback
 
+    from frethmm.app.gui_pool import (
+        ClassificationFailure,
+        ClassificationSuccess,
+        PoolFinished,
+        PoolOutcome,
+        PoolProgress,
+        iter_classification_pool,
+    )
+
+    terminal_type = _DONE
     try:
-        from frethmm.core.model import process_trace_file
+        for event in iter_classification_pool(tasks, workers, cancel_event):
+            match event:
+                case PoolProgress(completed=current, total=total):
+                    result_queue.put(
+                        _Msg(_PROGRESS, {"current": current, "total": total})
+                    )
+                case PoolOutcome(index=index, outcome=outcome):
+                    result_queue.put(
+                        _Msg(_LOG, f"[{index + 1}/{len(tasks)}] {outcome.filepath.name}")
+                    )
+                    match outcome:
+                        case ClassificationSuccess(
+                            filepath=filepath,
+                            output_dir=output_dir,
+                            result=result,
+                        ):
+                            for warning in result.warnings:
+                                result_queue.put(_Msg(_WARNING, warning))
+                            result_queue.put(
+                                _Msg(
+                                    _RESULT,
+                                    {
+                                        "filepath": str(filepath),
+                                        "result": result,
+                                        "output_dir": (
+                                            str(output_dir)
+                                            if output_dir is not None
+                                            else None
+                                        ),
+                                    },
+                                )
+                            )
+                            result_queue.put(
+                                _Msg(
+                                    _LOG,
+                                    {
+                                        "key": "log_result",
+                                        "kwargs": {
+                                            "lp": f"{result.log_prob:.2f}",
+                                            "m": [
+                                                round(mean, 4)
+                                                for mean in result.state_means.tolist()
+                                            ],
+                                            "sig": f"{result.state_sigma:.4f}",
+                                        },
+                                    },
+                                )
+                            )
+                        case ClassificationFailure(
+                            filepath=filepath,
+                            message=message,
+                            traceback=worker_traceback,
+                        ):
+                            error_text = f"{message}\n{worker_traceback}"
+                            _append_debug_log(
+                                f"Worker error for {filepath}: {error_text}"
+                            )
+                            result_queue.put(_Msg(_ERROR, error_text))
+                            result_queue.put(
+                                _Msg(
+                                    _RESULT,
+                                    {
+                                        "filepath": str(filepath),
+                                        "result": None,
+                                        "error": message,
+                                    },
+                                )
+                            )
+                        case unreachable:
+                            assert_never(unreachable)
+                case PoolFinished(cancelled=cancelled):
+                    terminal_type = _CANCELLED if cancelled else _DONE
+                case unreachable:
+                    assert_never(unreachable)
     except Exception as exc:
-        _append_debug_log(f"Import error in worker: {exc}\n{traceback.format_exc()}")
-        result_queue.put(_Msg(_ERROR, f"Import error: {exc}\n{traceback.format_exc()}"))
-        result_queue.put(_Msg(_DONE, None))
-        return
-
-    total = len(tasks)
-    for i, task in enumerate(tasks):
-        if cancel_event.is_set():
-            result_queue.put(_Msg(_LOG, "status_cancelled"))
-            break
-
-        fp = Path(task["filepath"])
-        config_bytes = task["config_bytes"]
-        export_options_bytes = task["export_options_bytes"]
-        output_dir = (
-            Path(task["output_dir"])
-            if task.get("output_dir") is not None
-            else None
-        )
-        result_queue.put(_Msg(_LOG, f"[{i + 1}/{total}] {fp.name}"))
-        result_queue.put(_Msg(_PROGRESS, {"current": i + 1, "total": total}))
-
-        try:
-            config = pickle.loads(config_bytes)
-            export_options = pickle.loads(export_options_bytes)
-            r = process_trace_file(fp, config, output_dir, export_options=export_options)
-
-            for w in r.warnings:
-                result_queue.put(_Msg(_WARNING, w))
-
-            result_queue.put(
-                _Msg(
-                    _RESULT,
-                    {
-                        "filepath": str(fp),
-                        "result": r,
-                        "output_dir": str(output_dir) if output_dir else None,
-                    },
-                )
-            )
-            result_queue.put(
-                _Msg(
-                    _LOG,
-                    {
-                        "key": "log_result",
-                        "kwargs": {
-                            "lp": f"{r.log_prob:.2f}",
-                            "m": [round(m, 4) for m in r.state_means.tolist()],
-                            "sig": f"{r.state_sigma:.4f}",
-                        },
-                    },
-                )
-            )
-        except Exception as exc:
-            tb = traceback.format_exc()
-            _append_debug_log(f"Worker error for {fp}: {exc}\n{tb}")
-            result_queue.put(_Msg(_ERROR, f"{exc}\n{tb}"))
-            result_queue.put(
-                _Msg(
-                    _RESULT,
-                    {"filepath": str(fp), "result": None, "error": str(exc)},
-                )
-            )
-
-    result_queue.put(_Msg(_DONE, None))
+        worker_traceback = traceback.format_exc()
+        _append_debug_log(f"Pool error: {exc}\n{worker_traceback}")
+        result_queue.put(_Msg(_ERROR, f"{exc}\n{worker_traceback}"))
+        terminal_type = _CANCELLED if cancel_event.is_set() else _DONE
+    finally:
+        result_queue.put(_Msg(terminal_type, None))
 
 
 def _review_worker(
-    tasks: list[dict[str, Any]],
+    tasks: list[ClassificationTask],
+    workers: int,
     output_name: str,
     rows: int,
     cols: int,
+    publication: _ReviewPublication,
     cancel_event: threading.Event,
     result_queue: queue.Queue[_Msg],
 ) -> None:
-    import pickle
     import traceback
 
-    try:
-        from frethmm.core.model import process_trace_file
-        from frethmm.domain.models import ExportOptions
-        from frethmm.viz.review_grid import plot_review_grid
-    except Exception as exc:
-        _append_debug_log(f"Import error in review worker: {exc}\n{traceback.format_exc()}")
-        result_queue.put(_Msg(_ERROR, f"Import error: {exc}\n{traceback.format_exc()}"))
-        result_queue.put(_Msg(_DONE, None))
-        return
+    from frethmm.app.gui_pool import (
+        ClassificationFailure,
+        ClassificationSuccess,
+        PoolFinished,
+        PoolOutcome,
+        PoolProgress,
+        iter_classification_pool,
+    )
 
+    terminal_type = _DONE
     try:
-        export_options = ExportOptions.classified_only()
         results_by_output: dict[Path, list[Any]] = {}
         configs_by_output: dict[Path, Any] = {}
-        total = len(tasks)
+        successful_count = 0
 
-        for i, task in enumerate(tasks):
-            if cancel_event.is_set():
-                result_queue.put(_Msg(_LOG, "status_cancelled"))
-                result_queue.put(_Msg(_DONE, None))
-                return
-            filepath = Path(task["filepath"])
-            config = pickle.loads(task["config_bytes"])
-            result_output_dir = (
-                Path(task["output_dir"])
-                if task.get("output_dir") is not None
-                else None
-            )
-            result_queue.put(_Msg(_LOG, f"[{i + 1}/{total}] {filepath.name}"))
-            result_queue.put(_Msg(_PROGRESS, {"current": i + 1, "total": total}))
-            result = process_trace_file(
-                filepath,
-                config,
-                result_output_dir,
-                export_options=export_options,
-            )
-            output_key = result_output_dir or filepath.parent
-            results_by_output.setdefault(output_key, []).append(result)
-            configs_by_output[output_key] = config
-            for warning in result.warnings:
-                result_queue.put(_Msg(_WARNING, warning))
+        for event in iter_classification_pool(tasks, workers, cancel_event):
+            match event:
+                case PoolProgress(completed=current, total=total):
+                    result_queue.put(
+                        _Msg(_PROGRESS, {"current": current, "total": total})
+                    )
+                case PoolOutcome(index=index, outcome=outcome):
+                    result_queue.put(
+                        _Msg(_LOG, f"[{index + 1}/{len(tasks)}] {outcome.filepath.name}")
+                    )
+                    match outcome:
+                        case ClassificationSuccess(
+                            filepath=filepath,
+                            output_dir=output_dir,
+                            result=result,
+                        ):
+                            output_key = output_dir or filepath.parent
+                            results_by_output.setdefault(output_key, []).append(result)
+                            configs_by_output[output_key] = tasks[index].config
+                            successful_count += 1
+                            for warning in result.warnings:
+                                result_queue.put(_Msg(_WARNING, warning))
+                        case ClassificationFailure(
+                            filepath=filepath,
+                            message=message,
+                            traceback=worker_traceback,
+                        ):
+                            error_text = f"{message}\n{worker_traceback}"
+                            _append_debug_log(
+                                f"Review worker error for {filepath}: {error_text}"
+                            )
+                            result_queue.put(_Msg(_ERROR, error_text))
+                        case unreachable:
+                            assert_never(unreachable)
+                case PoolFinished(cancelled=cancelled):
+                    terminal_type = _CANCELLED if cancelled else _DONE
+                case unreachable:
+                    assert_never(unreachable)
+
+        if terminal_type == _CANCELLED or cancel_event.is_set():
+            terminal_type = _CANCELLED
+            return
+
+        from frethmm.viz.review_grid import plot_review_grid
 
         image_paths: list[Path] = []
-        for output_dir, results in results_by_output.items():
-            image_paths.extend(
-                plot_review_grid(
+        staged_images: list[tuple[Path, Path]] = []
+        with tempfile.TemporaryDirectory(prefix=".frethmm-review-") as staging_dir:
+            staging_root = Path(staging_dir)
+            for group_index, (output_dir, results) in enumerate(
+                results_by_output.items()
+            ):
+                final_output = output_dir / output_name
+                staged_output = staging_root / str(group_index) / final_output.name
+                staged_paths = plot_review_grid(
                     results,
                     configs_by_output[output_dir],
-                    output_dir / output_name,
+                    staged_output,
                     rows=rows,
                     cols=cols,
                 )
-            )
-        result_queue.put(
-            _Msg(
-                _REVIEW_DONE,
-                {
-                    "image_paths": [str(path) for path in image_paths],
-                    "count": total,
-                },
-            )
-        )
+                for staged_path in staged_paths:
+                    staged_name = Path(staged_path).name
+                    final_name = (
+                        final_output.name
+                        if staged_name == staged_output.name
+                        else staged_name.replace(
+                            staged_output.stem,
+                            final_output.stem,
+                            1,
+                        )
+                    )
+                    staged_images.append(
+                        (Path(staged_path), final_output.parent / final_name)
+                    )
+
+            if cancel_event.is_set():
+                terminal_type = _CANCELLED
+                return
+
+            with publication.lock:
+                if cancel_event.is_set():
+                    terminal_type = _CANCELLED
+                    return
+                for staged_path, final_path in staged_images:
+                    final_path.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(staged_path, final_path)
+                    image_paths.append(final_path)
+                result_queue.put(
+                    _Msg(
+                        _REVIEW_DONE,
+                        {
+                            "image_paths": [str(path) for path in image_paths],
+                            "count": successful_count,
+                        },
+                    )
+                )
+                publication.committed = True
     except Exception as exc:
-        tb = traceback.format_exc()
-        _append_debug_log(f"Review worker error: {exc}\n{tb}")
-        result_queue.put(_Msg(_ERROR, f"{exc}\n{tb}"))
+        worker_traceback = traceback.format_exc()
+        _append_debug_log(f"Review worker error: {exc}\n{worker_traceback}")
+        result_queue.put(_Msg(_ERROR, f"{exc}\n{worker_traceback}"))
+        terminal_type = _CANCELLED if cancel_event.is_set() else _DONE
     finally:
-        result_queue.put(_Msg(_DONE, None))
+        result_queue.put(_Msg(terminal_type, None))
 
 
 def _detect_fonts() -> dict[str, tuple[str, int, str]]:
@@ -305,7 +404,9 @@ class _App:
         self._worker_thread: Optional[threading.Thread] = None
         self._cancel_event = threading.Event()
         self._result_queue: queue.Queue[_Msg] = queue.Queue()
+        self._review_publication: _ReviewPublication | None = None
         self._after_id: Optional[str] = None
+        self._closing = False
         self._lang = "en"
         self._status_key = "status_ready"
         self._status_kwargs: dict[str, Any] = {}
@@ -439,7 +540,7 @@ class _App:
         )
         file_menu.add_separator()
         file_menu.add_command(
-            label=self._t("menu_file_exit"), command=self.root.quit
+            label=self._t("menu_file_exit"), command=self._on_close
         )
         menubar.add_cascade(label=self._t("menu_file"), menu=file_menu)
         self._file_menu = file_menu
@@ -683,7 +784,7 @@ class _App:
         
         self._lbl_workers = ctk.CTkLabel(row2, text=self._t("label_workers"))
         self._lbl_workers.pack(side=tk.LEFT)
-        self._workers_var = tk.IntVar(value=1)
+        self._workers_var = tk.IntVar(value=DEFAULT_GUI_WORKERS)
         self._workers_entry = ctk.CTkEntry(row2, textvariable=self._workers_var, width=50)
         self._workers_entry.pack(side=tk.LEFT, padx=(4, 0))
 
@@ -2397,32 +2498,53 @@ class _App:
             n_init=job.n_init,
         )
 
+    def _confirm_requested_workers(self) -> int | None:
+        raw_value = str(self._workers_entry.get()).strip()
+        try:
+            requested = int(raw_value)
+        except ValueError:
+            messagebox.showerror(
+                self._t("msg_invalid_params"),
+                self._t("msg_invalid_workers", v=raw_value),
+            )
+            return None
+        if requested < 1 or requested > 4:
+            messagebox.showerror(
+                self._t("msg_invalid_params"),
+                self._t("msg_invalid_workers", v=raw_value),
+            )
+            return None
+        if requested >= 3 and not messagebox.askyesno(
+            self._t("dlg_workers_warning_title"),
+            self._t("msg_workers_warning", workers=requested),
+        ):
+            return None
+        return requested
+
     def _build_tasks(
         self,
         folder_output_dirs: dict[str, Path] | None = None,
-    ) -> list[dict[str, Any]]:
-        import pickle
+    ) -> list[ClassificationTask]:
+        from frethmm.app.gui_pool import ClassificationTask
 
-        tasks: list[dict[str, Any]] = []
+        tasks: list[ClassificationTask] = []
         export_options = self._build_export_options()
-        export_options_bytes = pickle.dumps(export_options)
         if self.selected_files:
             config = self._build_config()
-            config_bytes = pickle.dumps(config)
             for path in self.selected_files:
                 source_path = Path(path)
                 task_output_dir = (
-                    self.output_dir
+                    Path(self.output_dir)
                     if self.output_dir
-                    else str(self._default_output_dir_for_file(source_path))
+                    else self._default_output_dir_for_file(source_path)
                 )
                 tasks.append(
-                    {
-                        "filepath": str(source_path),
-                        "config_bytes": config_bytes,
-                        "export_options_bytes": export_options_bytes,
-                        "output_dir": task_output_dir,
-                    }
+                    ClassificationTask(
+                        filepath=source_path,
+                        config=config,
+                        export_options=export_options,
+                        output_dir=task_output_dir,
+                    )
                 )
 
         if self.folder_jobs:
@@ -2430,7 +2552,6 @@ class _App:
 
             for job in self.folder_jobs:
                 config = self._build_folder_job_config(job)
-                config_bytes = pickle.dumps(config)
                 folder_path = Path(job.folder)
                 files = find_trace_files(folder_path)
                 if not files:
@@ -2439,20 +2560,18 @@ class _App:
                         "warning",
                     )
                     continue
-                job_output_dir = str(
-                    (folder_output_dirs or {}).get(
-                        job.folder,
-                        self._default_output_dir_for_folder(folder_path),
-                    )
+                job_output_dir = (folder_output_dirs or {}).get(
+                    job.folder,
+                    self._default_output_dir_for_folder(folder_path),
                 )
                 for path in files:
                     tasks.append(
-                        {
-                            "filepath": str(path),
-                            "config_bytes": config_bytes,
-                            "export_options_bytes": export_options_bytes,
-                            "output_dir": job_output_dir,
-                        }
+                        ClassificationTask(
+                            filepath=path,
+                            config=config,
+                            export_options=export_options,
+                            output_dir=job_output_dir,
+                        )
                     )
         return tasks
 
@@ -2482,6 +2601,9 @@ class _App:
             )
             return
 
+        requested_workers = self._confirm_requested_workers()
+        if requested_workers is None:
+            return
         try:
             folder_output_dirs = self._plan_folder_output_dirs()
             if folder_output_dirs is None:
@@ -2499,6 +2621,11 @@ class _App:
                 self._t("msg_no_files_title"), self._t("msg_no_files")
             )
             return
+        effective_workers = _effective_gui_workers(
+            requested_workers,
+            len(tasks),
+            os.cpu_count(),
+        )
         self._result_stats = {"ok": 0, "warnings": 0, "errors": 0}
         self._classified_outputs = {}
         self._results_map = {}
@@ -2516,6 +2643,7 @@ class _App:
 
         self._set_ui_running(True)
         self._cancel_event.clear()
+        self._review_publication = None
         self._result_queue = queue.Queue()
 
         self._log(
@@ -2532,6 +2660,7 @@ class _App:
             target=_worker,
             args=(
                 tasks,
+                effective_workers,
                 self._cancel_event,
                 self._result_queue,
             ),
@@ -2543,26 +2672,28 @@ class _App:
     def _build_review_tasks(
         self,
         folder_output_dirs: dict[str, Path] | None = None,
-    ) -> list[dict[str, Any]]:
-        import pickle
+    ) -> list[ClassificationTask]:
+        from frethmm.app.gui_pool import ClassificationTask
+        from frethmm.domain.models import ExportOptions
 
-        tasks: list[dict[str, Any]] = []
+        tasks: list[ClassificationTask] = []
+        export_options = ExportOptions.classified_only()
         if self.selected_files:
             config = self._build_config()
-            config_bytes = pickle.dumps(config)
             for path in self.selected_files:
                 source_path = Path(path)
                 task_output_dir = (
-                    self.output_dir
+                    Path(self.output_dir)
                     if self.output_dir
-                    else str(self._default_output_dir_for_file(source_path))
+                    else self._default_output_dir_for_file(source_path)
                 )
                 tasks.append(
-                    {
-                        "filepath": str(source_path),
-                        "config_bytes": config_bytes,
-                        "output_dir": task_output_dir,
-                    }
+                    ClassificationTask(
+                        filepath=source_path,
+                        config=config,
+                        export_options=export_options,
+                        output_dir=task_output_dir,
+                    )
                 )
 
         if self.folder_jobs:
@@ -2570,7 +2701,6 @@ class _App:
 
             for job in self.folder_jobs:
                 config = self._build_folder_job_config(job)
-                config_bytes = pickle.dumps(config)
                 folder_path = Path(job.folder)
                 files = find_trace_files(folder_path)
                 if not files:
@@ -2579,25 +2709,27 @@ class _App:
                         "warning",
                     )
                     continue
-                job_output_dir = str(
-                    (folder_output_dirs or {}).get(
-                        job.folder,
-                        self._default_output_dir_for_folder(folder_path),
-                    )
+                job_output_dir = (folder_output_dirs or {}).get(
+                    job.folder,
+                    self._default_output_dir_for_folder(folder_path),
                 )
                 for path in files:
                     tasks.append(
-                        {
-                            "filepath": str(path),
-                            "config_bytes": config_bytes,
-                            "output_dir": job_output_dir,
-                        }
+                        ClassificationTask(
+                            filepath=path,
+                            config=config,
+                            export_options=export_options,
+                            output_dir=job_output_dir,
+                        )
                     )
         return tasks
 
     def _run_review_grid(self) -> None:
         import traceback
 
+        requested_workers = self._confirm_requested_workers()
+        if requested_workers is None:
+            return
         try:
             rows = int(self._review_rows_var.get())
             cols = int(self._review_cols_var.get())
@@ -2620,9 +2752,15 @@ class _App:
                 self._t("msg_review_no_files"),
             )
             return
+        effective_workers = _effective_gui_workers(
+            requested_workers,
+            len(tasks),
+            os.cpu_count(),
+        )
 
         self._set_ui_running(True)
         self._cancel_event.clear()
+        self._review_publication = _ReviewPublication()
         self._result_queue = queue.Queue()
         self._review_image_paths = []
         self._log(self._t("log_review_start", n=len(tasks)), "header")
@@ -2631,9 +2769,11 @@ class _App:
             target=_review_worker,
             args=(
                 tasks,
+                effective_workers,
                 output_name,
                 rows,
                 cols,
+                self._review_publication,
                 self._cancel_event,
                 self._result_queue,
             ),
@@ -2643,9 +2783,63 @@ class _App:
         self._after_id = self.root.after(80, self._poll_queue)
 
     def _cancel(self) -> None:
-        self._cancel_event.set()
+        publication = self._review_publication
+        if publication is None:
+            if self._cancel_event.is_set():
+                return
+            self._cancel_event.set()
+        else:
+            with publication.lock:
+                if publication.committed or self._cancel_event.is_set():
+                    return
+                self._cancel_event.set()
+        self._cancel_btn.configure(state="disabled")
         self._log(self._t("log_cancelling"), "warning")
         self._set_status("status_cancelling")
+
+    def _on_close(self) -> None:
+        if self._worker_thread is None:
+            self.root.destroy()
+            return
+        self._closing = True
+        self._cancel()
+
+    def _finish_worker(self, cancelled: bool) -> None:
+        if cancelled:
+            self._log(self._t("status_cancelled"), "warning")
+        else:
+            self._log(self._t("log_complete"), "success")
+            self._log(
+                self._t("log_complete_summary", **self._result_stats),
+                "header",
+            )
+            self._runtime_summary_value.configure(
+                text=self._t(
+                    "runtime_summary_value",
+                    ok=self._result_stats["ok"],
+                    warnings=self._result_stats["warnings"],
+                    errors=self._result_stats["errors"],
+                )
+            )
+        self._set_ui_running(False)
+        self._set_status("status_cancelled" if cancelled else "status_complete")
+        self._worker_thread = None
+        if self._after_id is not None:
+            self.root.after_cancel(self._after_id)
+            self._after_id = None
+        if not cancelled and self._result_stats["ok"] > 0:
+            messagebox.showinfo(
+                self._t("msg_run_complete_title"),
+                self._t(
+                    "msg_run_complete",
+                    ok=self._result_stats["ok"],
+                    warnings=self._result_stats["warnings"],
+                    errors=self._result_stats["errors"],
+                    path=self._last_output_path or self._t("result_panel_none"),
+                ),
+            )
+        if self._closing:
+            self.root.destroy()
 
     def _poll_queue(self) -> None:
         try:
@@ -2767,37 +2961,19 @@ class _App:
                     "success",
                 )
 
+        elif msg.type == _CANCELLED:
+            self._finish_worker(cancelled=True)
+
         elif msg.type == _DONE:
-            self._log(self._t("log_complete"), "success")
-            self._log(
-                self._t("log_complete_summary", **self._result_stats),
-                "header",
+            publication = self._review_publication
+            if publication is None:
+                closing_cancelled = self._closing
+            else:
+                with publication.lock:
+                    closing_cancelled = self._closing and not publication.committed
+            self._finish_worker(
+                cancelled=self._cancel_event.is_set() or closing_cancelled
             )
-            self._runtime_summary_value.configure(
-                text=self._t(
-                    "runtime_summary_value",
-                    ok=self._result_stats["ok"],
-                    warnings=self._result_stats["warnings"],
-                    errors=self._result_stats["errors"],
-                )
-            )
-            self._set_ui_running(False)
-            self._set_status("status_complete")
-            self._worker_thread = None
-            if self._after_id is not None:
-                self.root.after_cancel(self._after_id)
-                self._after_id = None
-            if self._result_stats["ok"] > 0:
-                messagebox.showinfo(
-                    self._t("msg_run_complete_title"),
-                    self._t(
-                        "msg_run_complete",
-                        ok=self._result_stats["ok"],
-                        warnings=self._result_stats["warnings"],
-                        errors=self._result_stats["errors"],
-                        path=self._last_output_path or self._t("result_panel_none"),
-                    ),
-                )
 
         elif msg.type == _REVIEW_DONE:
             info: dict = msg.payload
@@ -2872,6 +3048,7 @@ def run_gui() -> None:
 
     app = _App(root, fonts)
     app.build()
+    root.protocol("WM_DELETE_WINDOW", app._on_close)
 
     def _lazy_init():
         import importlib

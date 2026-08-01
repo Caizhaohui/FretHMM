@@ -1,14 +1,26 @@
 from frethmm.app.cli import build_parser
 from frethmm.app.gui import (
+    DEFAULT_GUI_WORKERS,
     DEFAULT_LOW_STATE_TAIL_TRIM_SECONDS,
     resolve_event_classified_paths,
 )
+from frethmm.domain.models import ClassificationConfig
 
 
 def test_gui_filter_default_matches_cli() -> None:
     args = build_parser().parse_args(["run", "--files", "trace.csv"])
 
     assert DEFAULT_LOW_STATE_TAIL_TRIM_SECONDS == args.low_state_tail_trim_seconds
+
+
+def test_only_gui_workers_default_to_two() -> None:
+    # Given / When
+    args = build_parser().parse_args(["run", "--files", "trace.csv"])
+
+    # Then
+    assert DEFAULT_GUI_WORKERS == 2
+    assert args.workers == 1
+    assert ClassificationConfig().workers == 1
 
 
 def test_gui_events_find_saved_classified_files_when_session_is_empty(tmp_path) -> None:

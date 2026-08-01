@@ -119,7 +119,7 @@ def test_cli_run_matches_committed_single_channel_hashes(tmp_path):
     manifests = list(tmp_path.glob("frethmm_run_manifest_*.json"))
     assert len(manifests) == 1
     manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
-    assert manifest["application"]["version"] == "1.5.0"
+    assert manifest["application"]["version"] == "1.6.0"
     assert manifest["command"] == "run"
     assert manifest["parameters"]["fit"]["n_init"] == 1
     assert manifest["inputs"][0]["name"] == SINGLE_TRACE.name

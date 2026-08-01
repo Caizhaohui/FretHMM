@@ -257,6 +257,7 @@ GUI screenshot (v1.0.0, with batch review grid panel):
 - **File selection**: Add `.csv` / `.dat` trace files via buttons or menu, or specify an input directory for batch processing
 - **State folder batches**: Add multiple raw-trace folders, each with its own state count, data mode, and signal column; each folder writes to its adjacent `<folder>_output` directory by default
 - **Parameters panel**: States, initial guesses, max iterations, tolerance, workers, data mode, signal column (displayed alongside output panel)
+- **GUI workers**: The Workers field defaults to `2` in the GUI only and accepts `1`–`4`; the CLI `--workers` default remains `1`. Use `1` for low-memory systems, `2` for a typical laptop (recommended), and `3` or `4` only when higher CPU and memory use is acceptable. Parallelism is between files only: each file is one task.
 - **Output options**: Checkboxes to select output files — classified.csv / summary.json / report.dat / path.dat / dwell.dat
 - **Review Grid section**: Click "Generate Review Grid" to classify the selected raw folders and save their paginated review images alongside the corresponding classified CSV files in each `<folder>_output` directory
 - **Manual-review workflow**: Inspect each review image, delete unsuitable `*_classified.csv` files, then select the reviewed `<folder>_output` directory in the ON/OFF section; results are written to `<folder>_output_ONOFF`
@@ -267,7 +268,7 @@ GUI screenshot (v1.0.0, with batch review grid panel):
 - **Results table**: Fitting results for each file with color coding (green = OK, orange = warning, red = error)
 - **Theme toggle**: Switch between Light / Dark / System via Settings menu or 🌓 button in the title bar
 - **Bilingual support**: Real-time English / Chinese UI switching via Settings → Language
-- **Threaded processing**: All analysis runs in a background thread with cancel support (Cancel button)
+- **Threaded processing**: All analysis runs in a background thread with cancel support (Cancel button). After cancellation, no further files are scheduled; files already active are allowed to complete and their `*_classified.csv` outputs are kept. A cancelled Review Grid run does not write a partial review image.
 - **Log panel**: Color-coded log output (blue headers, orange warnings, red errors, green completion)
 - **Status bar**: Current status and version number at the bottom
 
@@ -557,6 +558,15 @@ sidecar, and a JSON release manifest. The single-file build produces
 `dist/FretHMM.exe --version`.
 
 ## Changelog
+
+### v1.6.0 (2026-08-01)
+
+Windows GUI process-pool parallelism with safe defaults and cancel semantics:
+
+- **GUI workers**: GUI Workers default to `2` and accept `1`–`4`; CLI `--workers` remains default `1`. Values `3` and `4` prompt about higher CPU/memory use. Parallelism is between files only.
+- **True Windows multi-process pool**: classification and review-grid jobs run through a `spawn`-compatible process pool so Workers=2/4 actually accelerate batch work on Windows.
+- **Cancel / close safety**: after cancel, no further files are scheduled; in-flight files may finish and keep their `*_classified.csv` outputs. A cancelled review-grid run does not publish a partial PNG. Close after a successful submit keeps completed status.
+- **Release artifact**: Windows single-file `FretHMM.exe` is published with a SHA-256 checksum and JSON version manifest.
 
 ### v1.5.0 (2026-07-29)
 
