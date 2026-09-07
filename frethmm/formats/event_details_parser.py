@@ -71,6 +71,8 @@ def read_event_details(filepath: Union[str, Path]) -> list[Event]:
                 if "off_state_index" in present else -1,
                 event_source_type=row["event_source_type"]
                 if "event_source_type" in present else f"normal_{row['event_type'].lower()}",
+                state_value_range=float(row["state_value_range"])
+                if "state_value_range" in present else 0.0,
             )
         )
     return events

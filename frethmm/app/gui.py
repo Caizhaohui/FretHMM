@@ -1230,10 +1230,10 @@ class _App:
         import csv as csv_module
 
         from frethmm.core.events import (
-            DETAIL_FIELDS, STAGE_SUMMARY_FIELDS, SUMMARY_FIELDS,
+            DETAIL_FIELDS, PLOT_INPUT_FIELDS, STAGE_SUMMARY_FIELDS, SUMMARY_FIELDS,
             event_to_detail_row, extract_events, included_statistical_events,
-            overall_fields, summarize_stage_events, summarize_stage_overall,
-            summarize_events, summarize_overall,
+            overall_fields, summarize_plot_input, summarize_stage_events,
+            summarize_stage_overall, summarize_events, summarize_overall,
         )
         from frethmm.formats.classified_parser import read_classified_csv
 
@@ -1285,6 +1285,8 @@ class _App:
         _w("event_details.csv", DETAIL_FIELDS, detail_rows)
         _w("event_summary.csv", STAGE_SUMMARY_FIELDS if multistage_files else SUMMARY_FIELDS, per_file_summaries)
         _w("event_stats_overall.csv", overall_fields(overall_rows[0]), overall_rows)
+        plot_input_rows = summarize_plot_input(all_events)
+        _w("input_plot.csv", PLOT_INPUT_FIELDS, plot_input_rows)
 
         self._events_output_dir = str(out)
         self._log(

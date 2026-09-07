@@ -21,11 +21,15 @@ def _run_module(module: str) -> subprocess.CompletedProcess[str]:
 
 
 def test_cli_version_reports_package_version():
-    assert _run_module("frethmm.app.cli").stdout.strip() == "FretHMM 1.6.0"
+    from frethmm import __version__
+
+    assert _run_module("frethmm.app.cli").stdout.strip() == f"FretHMM {__version__}"
 
 
 def test_gui_version_does_not_launch_a_window():
-    assert _run_module("frethmm.app.gui").stdout.strip() == "FretHMM 1.6.0"
+    from frethmm import __version__
+
+    assert _run_module("frethmm.app.gui").stdout.strip() == f"FretHMM {__version__}"
 
 
 def test_cli_run_defaults_to_single_channel_mode_and_250_second_filter():

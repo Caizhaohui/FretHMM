@@ -56,6 +56,9 @@ class Event:
     stage_state_mean: float = float("nan")
     off_state_index: int = -1
     event_source_type: str = "normal_on"
+    # File-level fluorescence amplitude shared by every event of the source
+    # file (see :func:`_file_state_value_range`).
+    state_value_range: float = 0.0
 
 
 def _estimate_dt(times: FloatArray) -> float:
@@ -75,6 +78,42 @@ def included_statistical_events(events: list[Event]) -> list[Event]:
         for event in events
         if not event.excluded and event.event_type in {"ON", "OFF"}
     ]
+
+
+def _file_state_value_range(
+    events: list[Event],
+    state_path: IntArray,
+    state_means: FloatArray,
+) -> float:
+    """Fluorescence amplitude of a trace, shared by all of its event rows.
+
+    - Multiple included events: ``max(state_value) - min(state_value)`` over
+      the included events — the real ON/OFF contrast of the molecule.
+    - Exactly one included ON event (e.g. a trace that stays ON and then
+      photobleaches, the terminal low run being omitted): the ON level minus
+      the minimum classified value in the file, i.e. the signal amplitude
+      above the bleached baseline.
+    - Anything else (single OFF event, no included events): 0.0.
+    """
+    included = included_statistical_events(events)
+    if len(included) >= 2:
+        values = [event.state_value for event in included]
+        return max(values) - min(values)
+    if len(included) == 1 and included[0].event_type == "ON":
+        present_states = np.unique(state_path)
+        data_min = min(float(state_means[int(state)]) for state in present_states)
+        return included[0].state_value - data_min
+    return 0.0
+
+
+def _assign_state_value_range(
+    events: list[Event],
+    state_path: IntArray,
+    state_means: FloatArray,
+) -> None:
+    value_range = _file_state_value_range(events, state_path, state_means)
+    for event in events:
+        event.state_value_range = value_range
 
 
 def extract_events(
@@ -106,7 +145,9 @@ def extract_events(
         return []
 
     if len(state_means) > 2:
-        return _extract_multistage_events(state_path, state_means, times, source_file)
+        events = _extract_multistage_events(state_path, state_means, times, source_file)
+        _assign_state_value_range(events, state_path, state_means)
+        return events
 
     _ = tail_off_threshold_seconds
     on_state = int(np.argmax(state_means))
@@ -166,6 +207,7 @@ def extract_events(
             )
         )
 
+    _assign_state_value_range(events, state_path, state_means)
     return events
 
 
@@ -337,6 +379,47 @@ def summarize_overall(all_events: list[Event], file_count: int) -> dict[str, obj
     }
 
 
+def summarize_plot_input(all_events: list[Event]) -> list[dict[str, object]]:
+    """Build the per-file ``input_plot.csv`` rows for downstream visualisation.
+
+    One row per source file, aggregating the event list into the handful of
+    quantities plotting workflows typically need:
+    ``source_file / ON_events / OFF_events / Fluorescence_strength /
+    Duration_time`` where Fluorescence_strength is the file-level
+    :attr:`Event.state_value_range` and Duration_time is the last event's
+    ``end_time`` (the molecule's total observation time in seconds).
+    """
+    files: dict[str, list[Event]] = {}
+    for event in all_events:
+        files.setdefault(event.source_file, []).append(event)
+
+    rows: list[dict[str, object]] = []
+    for source_file in sorted(files):
+        events = files[source_file]
+        on_count = sum(1 for event in events if event.event_type == "ON")
+        off_count = sum(1 for event in events if event.event_type == "OFF")
+        last_event = max(events, key=lambda event: event.end_time)
+        rows.append(
+            {
+                "source_file": source_file,
+                "ON_events": on_count,
+                "OFF_events": off_count,
+                "Fluorescence_strength": round(last_event.state_value_range, 6),
+                "Duration_time": round(last_event.end_time, 6),
+            }
+        )
+    return rows
+
+
+PLOT_INPUT_FIELDS = [
+    "source_file",
+    "ON_events",
+    "OFF_events",
+    "Fluorescence_strength",
+    "Duration_time",
+]
+
+
 def summarize_stage_events(source_file: str, events: list[Event]) -> list[dict[str, object]]:
     stage_indices = sorted({event.stage_state_index for event in events if event.stage_state_index >= 0})
     rows: list[dict[str, object]] = []
@@ -392,6 +475,7 @@ def event_to_detail_row(event: Event) -> dict[str, object]:
         "stage_state_mean": round(event.stage_state_mean, 6),
         "off_state_index": event.off_state_index,
         "event_source_type": event.event_source_type,
+        "state_value_range": round(event.state_value_range, 6),
     }
 
 
@@ -412,6 +496,7 @@ DETAIL_FIELDS = [
     "stage_state_mean",
     "off_state_index",
     "event_source_type",
+    "state_value_range",
 ]
 
 SUMMARY_FIELDS = [

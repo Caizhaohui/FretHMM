@@ -195,13 +195,14 @@ frethmm events --input-dir ./results/ --tail-off-threshold-seconds 250 --output-
 | `--output-dir` | — | Output directory (required) |
 | `--tail-off-threshold-seconds` | 100.0 | Legacy compatibility option; terminal low segments are omitted rather than recorded as OFF |
 
-Three CSV tables are written per run:
+Four CSV tables are written per run:
 
 | File | Description |
 |------|-------------|
-| `event_details.csv` | One row per event: source file, type (ON/OFF), index, state value, start/end time and frame, duration, excluded flag |
+| `event_details.csv` | One row per event: source file, type (ON/OFF), index, state value, start/end time and frame, duration, excluded flag, plus `state_value_range` — the file-level fluorescence amplitude: `max − min` over included events; for a file whose only included event is a single ON (e.g. ON followed by an omitted photobleach tail), `ON level − minimum classified value` (signal above the bleached baseline) |
 | `event_summary.csv` | One row per source file: ON/OFF counts, total and mean dwell times |
 | `event_stats_overall.csv` | Aggregate across all files: event counts, total/mean ON and OFF times |
+| `input_plot.csv` | One row per source file for downstream visualisation: `source_file`, `ON_events`, `OFF_events`, `Fluorescence_strength` (= `state_value_range`), `Duration_time` (= last event's `end_time`; for ON-then-bleach traces this is the observable duration before photobleaching) |
 
 #### dwell-stats — Dwell-Time Statistics + Rate-Constant Fit
 
@@ -558,6 +559,24 @@ sidecar, and a JSON release manifest. The single-file build produces
 `dist/FretHMM.exe --version`.
 
 ## Changelog
+
+### v1.7.1 (2026-09-07)
+
+Plot-ready per-molecule table from `events`:
+
+- **New `input_plot.csv`** written alongside the other three event tables (CLI and GUI): one row per source file with `source_file`, `ON_events`, `OFF_events`, `Fluorescence_strength` (the file-level `state_value_range`), and `Duration_time` (the last event's `end_time` — for ON-then-bleach traces, the observable duration before photobleaching). Designed as a direct input for downstream visualisation.
+- New `summarize_plot_input` + `PLOT_INPUT_FIELDS` in `frethmm.core.events`, shared by CLI and GUI; the run manifest now lists `input_plot.csv` among the outputs.
+
+### v1.7.0 (2026-09-07)
+
+Per-event fluorescence amplitude in `event_details.csv`:
+
+- **New `state_value_range` column** (file-level value repeated on every event row of a source file):
+  - Files with multiple included events: `max(state_value) − min(state_value)` over included events — the real ON/OFF fluorescence contrast (excluded/omitted photobleach tails do not participate).
+  - Files whose only included event is a single ON event (e.g. molecule stays ON then photobleaches): `ON level − minimum classified value in the file` — the signal amplitude above the bleached baseline.
+  - Degenerate cases (constant-ON trace, single OFF, no included events): `0.0`.
+- **Backward compatible**: `read_event_details` parses pre-v1.7 event files without the column (defaults to `0.0`), so dwell-stats keeps consuming older outputs.
+- CLI and GUI events outputs pick up the column automatically (both share `DETAIL_FIELDS`).
 
 ### v1.6.0 (2026-08-01)
 

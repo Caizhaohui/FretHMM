@@ -54,3 +54,6 @@ desktop.ini
 
 # Local packaging leftovers
 *.zip
+
+# Local AI tool state
+.omo/

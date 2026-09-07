@@ -399,6 +399,7 @@ def cmd_events(args: ParsedArguments) -> None:
 
     from frethmm.core.events import (
         DETAIL_FIELDS,
+        PLOT_INPUT_FIELDS,
         SUMMARY_FIELDS,
         STAGE_SUMMARY_FIELDS,
         Event,
@@ -406,6 +407,7 @@ def cmd_events(args: ParsedArguments) -> None:
         extract_events,
         included_statistical_events,
         overall_fields,
+        summarize_plot_input,
         summarize_stage_events,
         summarize_stage_overall,
         summarize_events,
@@ -477,11 +479,14 @@ def cmd_events(args: ParsedArguments) -> None:
     summary_fields = STAGE_SUMMARY_FIELDS if multistage_output else SUMMARY_FIELDS
     _write_csv("event_summary.csv", summary_fields, per_file_summaries)
     _write_csv("event_stats_overall.csv", overall_fields(overall_rows[0]), overall_rows)
+    plot_input_rows = summarize_plot_input(all_events)
+    _write_csv("input_plot.csv", PLOT_INPUT_FIELDS, plot_input_rows)
 
     print(f"\nProcessed {len(files)} file(s).")
     print(f"Wrote {len(detail_rows)} event rows to {output_dir / 'event_details.csv'}")
     print(f"Wrote {len(per_file_summaries)} per-file summaries to {output_dir / 'event_summary.csv'}")
     print(f"Wrote overall summary to {output_dir / 'event_stats_overall.csv'}")
+    print(f"Wrote {len(plot_input_rows)} plot-input rows to {output_dir / 'input_plot.csv'}")
     manifest_path = write_run_manifest(
         command="events",
         parameters={"tail_off_threshold_seconds": args.tail_off_threshold_seconds},
@@ -490,6 +495,7 @@ def cmd_events(args: ParsedArguments) -> None:
             output_dir / "event_details.csv",
             output_dir / "event_summary.csv",
             output_dir / "event_stats_overall.csv",
+            output_dir / "input_plot.csv",
         ],
         output_dir=output_dir,
     )

@@ -231,3 +231,119 @@ def test_summarize_overall_aggregates_across_files():
     assert overall["included_off_event_count"] == 0
     assert overall["total_on_time_seconds"] == 4.0  # 2 files * 2s ON each
     assert overall["total_off_time_seconds"] == 0.0
+
+
+# --- state_value_range (file-level fluorescence amplitude) ------------------
+
+
+def test_state_value_range_multi_event_uses_max_minus_min():
+    """2-state trace with ON/OFF alternation: range = ON - OFF state values."""
+    events = _run([0, 0, 1, 1, 0, 0, 1, 1], [0.2, 0.8])
+
+    assert len(events) >= 2
+    assert {e.event_type for e in events} == {"ON", "OFF"}
+    # Every row of the file carries the same file-level amplitude.
+    assert {e.state_value_range for e in events} == {0.8 - 0.2}
+
+
+def test_state_value_range_three_state_spans_included_events():
+    """3-state trace: range spans the highest and lowest included event values."""
+    # ON(0.9) -> OFF(0.5) -> ON(0.9): min over events is the OFF value 0.5.
+    events = _run([2, 2, 1, 1, 2, 2], [0.2, 0.5, 0.9])
+
+    values = {e.state_value_range for e in events}
+    assert values == {0.9 - 0.5}
+
+
+def test_state_value_range_single_on_uses_classified_minimum():
+    """ON + omitted photobleach tail: range = ON level - classified data minimum.
+
+    The trace stays ON then drops to the low (bleached) state without
+    recovery, so the only included event is a single ON. The amplitude is
+    measured against the bleached baseline present in the classified data.
+    """
+    # state 1 (0.8) = ON for 50 frames, then state 0 (0.2) bleached tail with
+    # no recovery -> terminal low run is omitted -> exactly one ON event.
+    path = [1] * 50 + [0] * 300
+    events = _run(path, [0.2, 0.8], threshold=100.0)
+
+    assert [e.event_type for e in events] == ["ON"]
+    # min of classified data = 0.2 (bleached state present in the path).
+    assert events[0].state_value_range == pytest.approx(0.8 - 0.2)
+
+
+def test_state_value_range_constant_on_trace_is_zero():
+    """A trace that never leaves the ON state has no baseline contrast -> 0."""
+    # Both states exist in state_means, but the path only ever visits state 1.
+    events = _run([1, 1, 1, 1], [0.2, 0.8])
+
+    assert [e.event_type for e in events] == ["ON"]
+    # min over states present in the path = 0.8 (only ON state appears).
+    assert events[0].state_value_range == pytest.approx(0.0)
+
+
+def test_state_value_range_single_off_trace_is_zero():
+    """An all-OFF trace yields no statistical amplitude -> 0.0."""
+    events = _run([0, 0, 0, 0], [0.2, 0.8])
+
+    assert events == []
+    # No events at all; nothing to assert on the range beyond no crash.
+
+
+def test_state_value_range_detail_row_contains_column():
+    """event_to_detail_row exposes the new column for event_details.csv."""
+    from frethmm.core.events import DETAIL_FIELDS, event_to_detail_row
+
+    events = _run([0, 0, 1, 1, 0, 0, 1, 1], [0.2, 0.8])
+    row = event_to_detail_row(events[0])
+
+    assert "state_value_range" in DETAIL_FIELDS
+    assert row["state_value_range"] == pytest.approx(0.6)
+
+
+# --- input_plot.csv aggregation (summarize_plot_input) ---------------------
+
+
+def test_summarize_plot_input_aggregates_per_file():
+    """One row per source file with counts, range, and last end_time."""
+    from frethmm.core.events import PLOT_INPUT_FIELDS, summarize_plot_input
+
+    # File a: ON/OFF/ON -> 2 ON + 1 OFF, range 0.6, last end_time 7.0
+    ev_a = _run([0, 0, 1, 1, 0, 1, 1, 1], [0.2, 0.8], source="a.csv")
+    # File b: single ON + omitted terminal low -> 1 ON + 0 OFF
+    ev_b = _run([1] * 50 + [0] * 300, [0.2, 0.8], source="b.csv")
+
+    rows = summarize_plot_input(ev_a + ev_b)
+
+    assert [r["source_file"] for r in rows] == ["a.csv", "b.csv"]
+    row_a, row_b = rows
+    assert (row_a["ON_events"], row_a["OFF_events"]) == (2, 1)
+    assert row_a["Fluorescence_strength"] == pytest.approx(0.6)
+    assert row_a["Duration_time"] == pytest.approx(7.0)  # last event's end_time
+    assert (row_b["ON_events"], row_b["OFF_events"]) == (1, 0)
+    assert row_b["Fluorescence_strength"] == pytest.approx(0.8 - 0.2)
+    # The bleached tail emits no event, so the last event's end_time is the
+    # ON end (t=49) — the observable duration before photobleaching.
+    assert row_b["Duration_time"] == pytest.approx(49.0)
+    # Column contract matches the plotting schema.
+    assert PLOT_INPUT_FIELDS == [
+        "source_file", "ON_events", "OFF_events",
+        "Fluorescence_strength", "Duration_time",
+    ]
+
+
+def test_summarize_plot_input_empty():
+    from frethmm.core.events import summarize_plot_input
+
+    assert summarize_plot_input([]) == []
+
+
+def test_summarize_plot_input_duration_is_max_end_time():
+    """Duration_time is the latest end_time across the file's events."""
+    from frethmm.core.events import summarize_plot_input
+
+    events = _run([0, 0, 1, 1, 0, 0], [0.2, 0.8], source="t.csv")
+    rows = summarize_plot_input(events)
+
+    last_end = max(e.end_time for e in events)
+    assert rows[0]["Duration_time"] == pytest.approx(last_end)

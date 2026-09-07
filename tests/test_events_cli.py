@@ -52,7 +52,7 @@ def _read_csv(path: Path) -> list[dict[str, str]]:
 
 
 def test_cli_events_input_dir_writes_three_tables(tmp_path: Path):
-    """``--input-dir`` produces all three output tables with ON/OFF rows."""
+    """``--input-dir`` produces all output tables with ON/OFF rows."""
     classified = _make_classified(tmp_path)
     out_dir = tmp_path / "events"
     completed = _run_events_cli([
@@ -64,6 +64,7 @@ def test_cli_events_input_dir_writes_three_tables(tmp_path: Path):
     details = _read_csv(out_dir / "event_details.csv")
     summary = _read_csv(out_dir / "event_summary.csv")
     overall = _read_csv(out_dir / "event_stats_overall.csv")
+    plot_input = _read_csv(out_dir / "input_plot.csv")
 
     # The synthetic trace alternates OFF/ON/OFF/ON.
     types = [row["event_type"] for row in details]
@@ -74,6 +75,18 @@ def test_cli_events_input_dir_writes_three_tables(tmp_path: Path):
     # Overall aggregate present.
     assert len(overall) == 1
     assert int(overall[0]["file_count"]) == 1
+    # Plot-input table: one row per file with the plotting schema.
+    assert len(plot_input) == 1
+    assert plot_input[0]["source_file"] == classified.name
+    assert list(plot_input[0].keys()) == [
+        "source_file", "ON_events", "OFF_events",
+        "Fluorescence_strength", "Duration_time",
+    ]
+    assert int(plot_input[0]["ON_events"]) == types.count("ON")
+    assert int(plot_input[0]["OFF_events"]) == types.count("OFF")
+    assert float(plot_input[0]["Duration_time"]) == max(
+        float(row["end_time"]) for row in details
+    )
     manifests = list(out_dir.glob("frethmm_run_manifest_*.json"))
     assert len(manifests) == 1
     manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
@@ -83,6 +96,7 @@ def test_cli_events_input_dir_writes_three_tables(tmp_path: Path):
         "event_details.csv",
         "event_summary.csv",
         "event_stats_overall.csv",
+        "input_plot.csv",
     }
 
 

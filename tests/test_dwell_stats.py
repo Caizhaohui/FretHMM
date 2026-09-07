@@ -205,3 +205,30 @@ def test_read_event_details_rejects_missing_columns(tmp_path):
     bad.write_text("source_file,event_type\ntrace.csv,ON\n", encoding="utf-8")
     with pytest.raises(ValueError, match="missing event-details columns"):
         read_event_details(bad)
+
+
+def test_read_event_details_tolerates_legacy_file_without_range_column(tmp_path):
+    """A pre-v1.5 event_details.csv (no state_value_range) still parses.
+
+    The new column is optional in the parser and defaults to 0.0 so that
+    dwell-stats keeps consuming event files written by older versions.
+    """
+    from frethmm.formats.event_details_parser import read_event_details
+
+    legacy_header = ",".join(
+        [
+            "source_file", "event_label", "event_type", "event_index",
+            "state_value", "start_time", "end_time", "duration_seconds",
+            "start_frame", "end_frame", "excluded", "exclude_reason",
+        ]
+    )
+    legacy = tmp_path / "legacy_event_details.csv"
+    legacy.write_text(
+        legacy_header + "\ntrace.csv,ON_1,ON,1,0.8,0.0,11.0,12.0,0,11,False,\n",
+        encoding="utf-8",
+    )
+
+    rebuilt = read_event_details(legacy)
+    assert len(rebuilt) == 1
+    assert rebuilt[0].event_type == "ON"
+    assert rebuilt[0].state_value_range == 0.0

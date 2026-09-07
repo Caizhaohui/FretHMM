@@ -195,13 +195,14 @@ frethmm events --input-dir ./results/ --tail-off-threshold-seconds 250 --output-
 | `--output-dir` | — | 输出目录（必填） |
 | `--tail-off-threshold-seconds` | 100.0 | 兼容参数；末尾低值会被省略，不会记录为 OFF |
 
-每次运行写出三张 CSV 表：
+每次运行写出四张 CSV 表：
 
 | 文件 | 说明 |
 |------|------|
-| `event_details.csv` | 每个事件一行：源文件、类型（ON/OFF）、序号、状态值、起止时间与帧、时长、是否排除 |
+| `event_details.csv` | 每个事件一行：源文件、类型（ON/OFF）、序号、状态值、起止时间与帧、时长、是否排除，另含 `state_value_range` —— 文件级荧光幅度：纳入统计事件的 `最大值 − 最小值`；仅单个 ON 事件的文件（如持续 ON 后光漂白）为 `ON 荧光值 − 分类数据最小值`（ON 信号超出光漂白基线的幅度） |
 | `event_summary.csv` | 每个源文件一行：ON/OFF 计数、总时长与平均停留时间 |
 | `event_stats_overall.csv` | 跨文件汇总：事件计数、总/平均 ON 与 OFF 时长 |
+| `input_plot.csv` | 每个源文件一行，用于后续数据可视化：`source_file`、`ON_events`、`OFF_events`、`Fluorescence_strength`（= `state_value_range`）、`Duration_time`（= 最后一个事件的 `end_time`；对 ON 后光漂白的分子即光漂白前的有效观测时长） |
 
 #### dwell-stats — 停留时间统计 + 速率常数拟合
 
@@ -540,6 +541,24 @@ python build_exe.py --onefile
 `dist/FretHMM.exe`，可使用 `dist/FretHMM.exe --version` 验证而不打开 GUI。
 
 ## 更新日志
+
+### v1.7.1（2026-09-07）
+
+events 新增可视化友好输出表：
+
+- **新增 `input_plot.csv`**（与其余三张事件表同目录写出，CLI 与 GUI 均生效）：每个源文件一行，列为 `source_file`、`ON_events`、`OFF_events`、`Fluorescence_strength`（即文件级 `state_value_range`）、`Duration_time`（最后一个事件的 `end_time`；对 ON 后光漂白的分子为光漂白前的有效观测时长）。可直接作为后续数据可视化的输入。
+- `frethmm.core.events` 新增 `summarize_plot_input` 与 `PLOT_INPUT_FIELDS`，CLI/GUI 共用；运行清单（manifest）同步登记 `input_plot.csv`。
+
+### v1.7.0（2026-09-07）
+
+event_details.csv 新增逐事件荧光幅度列：
+
+- **新增 `state_value_range` 列**（文件级数值，同一源文件的所有事件行相同）：
+  - 多个纳入统计事件的文件：纳入事件的 `最大荧光值 − 最小荧光值`，即真实的 ON/OFF 荧光对比度（被省略的光漂白尾不参与）。
+  - 仅单个 ON 纳入事件的文件（如分子持续 ON 后光漂白）：`ON 荧光值 − 该文件分类数据最小值`，即 ON 信号超出光漂白基线的幅度。
+  - 退化情形（恒 ON、单 OFF、无纳入事件）：`0.0`。
+- **向后兼容**：`read_event_details` 可解析 v1.7 之前无此列的旧文件（默认 `0.0`），dwell-stats 不受影响。
+- CLI 与 GUI 的 events 输出自动带上新列（共用 `DETAIL_FIELDS`）。
 
 ### v1.6.0（2026-08-01）
 
