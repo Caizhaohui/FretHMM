@@ -31,6 +31,14 @@ class ParsedArguments(argparse.Namespace):
     max_states: int
     classified_only: bool
     verbose: bool
+    remove_spikes: bool
+    spike_threshold_sigma: float
+    trim_initial_artifacts: bool
+    max_initial_artifact_frames: int
+    smooth_window: int | None
+    min_dwell_frames: int
+    merge_state_threshold: float | None
+    merge_state_sigma_factor: float | None
     input_dir: str | None
     files: list[str]
     output_dir: str | None
@@ -59,6 +67,14 @@ class ParsedArguments(argparse.Namespace):
         self.max_states = 6
         self.classified_only = False
         self.verbose = False
+        self.remove_spikes = False
+        self.spike_threshold_sigma = 5.0
+        self.trim_initial_artifacts = False
+        self.max_initial_artifact_frames = 5
+        self.smooth_window = None
+        self.min_dwell_frames = 1
+        self.merge_state_threshold = None
+        self.merge_state_sigma_factor = None
         self.input_dir = None
         self.files = []
         self.output_dir = None
@@ -138,6 +154,52 @@ def _add_fit_arguments(sub: argparse.ArgumentParser) -> None:
         default=6,
         help="Maximum state count for BIC selection (only with --states auto, default: 6)",
     )
+    _ = sub.add_argument(
+        "--remove-spikes",
+        action="store_true",
+        help="Detect and clean isolated outlier spikes using robust local MAD",
+    )
+    _ = sub.add_argument(
+        "--spike-threshold-sigma",
+        type=float,
+        default=5.0,
+        help="Outlier spike threshold multiplier relative to robust MAD sigma (default: 5.0)",
+    )
+    _ = sub.add_argument(
+        "--trim-initial-artifacts",
+        action="store_true",
+        help="Detect and trim extreme instrument readout artifacts at acquisition start (e.g. frame 0)",
+    )
+    _ = sub.add_argument(
+        "--max-initial-artifact-frames",
+        type=int,
+        default=5,
+        help="Maximum initial frames to inspect for edge artifacts (default: 5)",
+    )
+    _ = sub.add_argument(
+        "--smooth-window",
+        type=int,
+        default=None,
+        help="Optional median filter window size (odd integer, e.g. 3) to suppress shot noise",
+    )
+    _ = sub.add_argument(
+        "--min-dwell-frames",
+        type=int,
+        default=1,
+        help="Minimum dwell frames; transient flickers shorter than this are merged into flanking states (default: 1)",
+    )
+    _ = sub.add_argument(
+        "--merge-state-threshold",
+        type=float,
+        default=None,
+        help="Merge adjacent state means differing by less than this absolute threshold",
+    )
+    _ = sub.add_argument(
+        "--merge-state-sigma-factor",
+        type=float,
+        default=None,
+        help="Merge adjacent state means differing by less than factor * state_sigma (e.g. 0.5)",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -171,7 +233,9 @@ def build_parser() -> argparse.ArgumentParser:
         "review-grid",
         help="Batch-classify traces and generate a visual review grid",
     )
-    _ = review.add_argument("--input-dir", type=str, required=True, help="Directory of trace files")
+    review_inp = review.add_mutually_exclusive_group(required=True)
+    _ = review_inp.add_argument("--input-dir", type=str, help="Directory of trace files")
+    _ = review_inp.add_argument("--files", nargs="+", type=str, help="Individual trace files")
     _ = review.add_argument("--output", type=str, required=True, help="Output PNG path for the review grid")
     _ = review.add_argument("--output-dir", type=str, default=None, help="Optional directory for classified CSV outputs")
     _add_fit_arguments(review)
@@ -272,6 +336,14 @@ def cmd_run(args: ParsedArguments) -> None:
         n_init=args.n_init,
         min_states=args.min_states,
         max_states=args.max_states,
+        remove_spikes=args.remove_spikes,
+        spike_threshold_sigma=args.spike_threshold_sigma,
+        trim_initial_artifacts=args.trim_initial_artifacts,
+        max_initial_artifact_frames=args.max_initial_artifact_frames,
+        smooth_window=args.smooth_window,
+        min_dwell_frames=args.min_dwell_frames,
+        merge_state_threshold=args.merge_state_threshold,
+        merge_state_sigma_factor=args.merge_state_sigma_factor,
     )
     output_dir = Path(args.output_dir) if args.output_dir else None
     input_paths = (
@@ -318,6 +390,9 @@ def cmd_run(args: ParsedArguments) -> None:
             print(f"    outputs: {stem}_classified.csv")
         else:
             print(f"    outputs: {stem}_classified.csv, {stem}_summary.json")
+        if result.diagnostics is not None and "snr_min" in result.diagnostics:
+            diag = result.diagnostics
+            print(f"    diagnostics: SNR_min={diag['snr_min']}, RMSE={diag['rmse']}, R^2={diag['r_squared']}")
         for warning in result.warnings:
             print(f"    WARNING: {warning}")
     print(f"  run manifest: {manifest_path}")
@@ -339,8 +414,8 @@ def cmd_tdp(args: ParsedArguments) -> None:
 def cmd_review_grid(args: ParsedArguments) -> None:
     from frethmm.viz.review_grid import generate_review_grid
 
-    if args.input_dir is None or args.output is None:
-        raise ValueError("review-grid requires input and output paths")
+    if (args.input_dir is None and not args.files) or args.output is None:
+        raise ValueError("review-grid requires --input-dir or --files and --output path")
     guesses = [float(value) for value in args.guesses.split(",")] if args.guesses else None
     config = ClassificationConfig(
         n_states=args.states,
@@ -354,17 +429,36 @@ def cmd_review_grid(args: ParsedArguments) -> None:
         n_init=args.n_init,
         min_states=args.min_states,
         max_states=args.max_states,
+        remove_spikes=args.remove_spikes,
+        spike_threshold_sigma=args.spike_threshold_sigma,
+        trim_initial_artifacts=args.trim_initial_artifacts,
+        max_initial_artifact_frames=args.max_initial_artifact_frames,
+        smooth_window=args.smooth_window,
+        min_dwell_frames=args.min_dwell_frames,
+        merge_state_threshold=args.merge_state_threshold,
+        merge_state_sigma_factor=args.merge_state_sigma_factor,
     )
     output_dir = Path(args.output_dir) if args.output_dir else None
-    input_paths = find_trace_files(Path(args.input_dir))
-    results, image_paths = generate_review_grid(
-        input_dir=Path(args.input_dir),
-        config=config,
-        output=Path(args.output),
-        results_dir=output_dir,
-        rows=args.rows,
-        cols=args.cols,
-    )
+    if args.input_dir:
+        input_paths = find_trace_files(Path(args.input_dir))
+        results, image_paths = generate_review_grid(
+            input_dir=Path(args.input_dir),
+            config=config,
+            output=Path(args.output),
+            results_dir=output_dir,
+            rows=args.rows,
+            cols=args.cols,
+        )
+    else:
+        input_paths = [Path(p) for p in args.files]
+        results, image_paths = generate_review_grid(
+            files=input_paths,
+            config=config,
+            output=Path(args.output),
+            results_dir=output_dir,
+            rows=args.rows,
+            cols=args.cols,
+        )
     print("\nReview grid page(s) saved to:")
     for image_path in image_paths:
         print(f"  {image_path}")

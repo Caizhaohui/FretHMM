@@ -2,7 +2,7 @@
 
 This document turns the current `pyHaMMy` prototype into an executable refactor plan for the next product shape: `FretHMM`.
 
-> **Status snapshot (v1.4.0, 2026-06):** Most Phase 0–3 product goals and the modular layout are **done**. Phase 4 multi-start + BIC is **done**; post-fit cleanup / preprocess / richer diagnostics remain **open**. Phase 5 interactive GUI preview is **open**. Phase 6 batch processing is largely **done**; experiment-level summary tables remain **open**. Phase 7 golden/synthetic tests for core CLI paths are largely **done**. Historical checkboxes below are kept for audit; prefer this snapshot over unchecked boxes when planning new work.
+> **Status snapshot (v1.4.0, 2026-06):** Most Phase 0–3 product goals and the modular layout are **done**. Phase 4 (multi-start, BIC model selection, preprocess artifact rejection, post-fit state cleanup, and fit quality diagnostics) is **fully completed**. Phase 5 interactive GUI preview is **open**. Phase 6 batch processing is largely **done**; experiment-level summary tables remain **open**. Phase 7 golden/synthetic tests for core CLI paths are largely **done**. Historical checkboxes below are kept for audit; prefer this snapshot over unchecked boxes when planning new work.
 
 > **Release readiness update:** v1.4.0 now has committed de-identified
 > regression fixtures, command-level run manifests, Windows CI, and a
@@ -195,38 +195,47 @@ Tasks:
 
 - [x] Add multi-start fitting to reduce local optimum sensitivity
 - [x] Add AIC/BIC support for choosing state count
-- [ ] Add optional post-fit segment cleanup:
+- [x] Add optional post-fit segment cleanup:
   - minimum dwell merging
   - merge nearly identical states
-- [ ] Add fit quality diagnostics
+- [x] Add fit quality diagnostics (SNR_min, SNR_mean, RMSE, MAE, R^2, state occupancies)
 - [x] Add explicit handling for edge cases:
   - constant traces
   - very short traces
   - NaN/Inf values
-  - outlier spikes
+  - outlier spikes & initial acquisition artifacts
 
 Files to change:
 
-- [x] `frethmm/model.py`
-- [ ] `frethmm/postprocess.py`
-- [ ] `frethmm/config.py`
+- [x] `frethmm/core/model.py`
+- [x] `frethmm/core/postprocess.py`
+- [x] `frethmm/domain/models.py`
+- [x] `frethmm/core/io.py`
+- [x] `frethmm/app/cli.py`
+- [x] `frethmm/viz/review_grid.py`
 
 New files to add:
 
-- [x] `frethmm/metrics.py`
-- [ ] `frethmm/preprocess.py`
+- [x] `frethmm/core/metrics.py`
+- [x] `frethmm/core/preprocess.py`
+- [x] `tests/test_preprocess.py`
+- [x] `tests/test_postprocess.py`
+- [x] `tests/test_metrics.py`
 
 Acceptance:
 
 - [x] Repeated runs on the same input are stable within defined tolerance
 - [x] Model selection is no longer fully manual
 - [x] Failure modes produce actionable warnings, not silent poor outputs
+- [x] Outlier spikes and initial shutter artifacts are rejected cleanly
+- [x] Transient flickers and near-duplicate states can be consolidated
+- [x] All 148 unit and regression tests pass (100% green)
 
-> **Status (v1.2.0):** Multi-start fitting and BIC model selection landed in
-> `frethmm/core/model.py` + new `frethmm/core/metrics.py`, exposed via
-> `--n-init` / `--states auto` / `--min-states` / `--max-states` on the CLI
-> and a new GUI auto-select checkbox. Post-fit segment cleanup, a dedicated
-> preprocess module, and richer fit diagnostics remain open for a follow-up.
+> **Status (v1.8.0):** Phase 4 is **fully complete**. Preprocessing module
+> (`frethmm/core/preprocess.py`), postprocessing state consolidation
+> (`frethmm/core/postprocess.py`), and quantitative quality diagnostics
+> (`frethmm/core/metrics.py`) are implemented, integrated into CLI commands,
+> and verified on synthetic fixtures and real experimental multi-state data.
 
 ### Phase 5: Rebuild the GUI around the actual workflow
 

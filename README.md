@@ -95,8 +95,16 @@ frethmm run --files data.csv --states 3 -v
 | `--n-init` | 10 | Number of deterministic multi-start Baum-Welch runs; best log-likelihood wins (use `1` to reproduce the legacy single-fit) |
 | `--min-states` | 2 | Minimum state count for BIC selection (only with `--states auto`) |
 | `--max-states` | 6 | Maximum state count for BIC selection (only with `--states auto`) |
+| `--remove-spikes` | off | Enable outlier spike detection and cleaning via rolling median and robust MAD scale estimation |
+| `--spike-threshold-sigma` | 5.0 | Spike detection threshold in units of robust sigma |
+| `--trim-initial-artifacts` | off | Automatically detect and trim initial acquisition/shutter artifacts (e.g. Frame 0 surge) |
+| `--max-initial-artifact-frames` | 5 | Maximum initial frames allowed to be trimmed as artifacts |
+| `--smooth-window` | None | Edge-preserving median smoothing window (odd integer) to suppress shot noise before HMM fitting |
+| `--min-dwell-frames` | 1 | Minimum state dwell duration in frames; shorter transient noise flickers are merged into neighbors |
+| `--merge-state-threshold` | None | Absolute difference threshold below which adjacent fitted states are merged |
+| `--merge-state-sigma-factor` | None | Relative scale threshold (k * sigma) below which adjacent fitted states are merged |
 | `--classified-only` | off | Output only `*_classified.csv`, skip summary/report/path/dwell |
-| `-v` / `--verbose` | off | Verbose output, show all warnings |
+| `-v` / `--verbose` | off | Verbose output, show all warnings and fit quality diagnostics (SNR, RMSE, R^2) |
 
 **Batch processing notes:**
 
@@ -130,7 +138,8 @@ frethmm review-grid --input-dir ./traces/ --output review.png --states 2 \
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `--input-dir` | — | Input trace file directory (required) |
+| `--input-dir` | — | Input trace file directory (either `--input-dir` or `--files` is required) |
+| `--files` | — | Specify one or more trace files (either `--files` or `--input-dir` is required) |
 | `--output` | — | Output PNG path, e.g. `review.png` (required) |
 | `--output-dir` | None | Optional directory for classified CSV side outputs |
 | `--states` | 2 | Number of HMM states, or `auto` to pick via BIC |
@@ -559,6 +568,28 @@ sidecar, and a JSON release manifest. The single-file build produces
 `dist/FretHMM.exe --version`.
 
 ## Changelog
+
+### v1.8.0 (2026-09-29)
+
+Data preprocessing, post-fit state consolidation, diagnostics, and GUI binding:
+
+- **Preprocessing module (`frethmm.core.preprocess`)**:
+  - Robust scale estimation using Median Absolute Deviation (`estimate_robust_sigma`).
+  - Outlier spike detection and cleaning (`--remove-spikes`, `--spike-threshold-sigma`).
+  - Initial acquisition/shutter artifact trimming (`--trim-initial-artifacts`, `--max-initial-artifact-frames`).
+  - Edge-preserving median smoothing window (`--smooth-window`).
+- **Postprocessing module (`frethmm.core.postprocess`)**:
+  - Minimum dwell frame segment merging (`--min-dwell-frames`) to suppress transient noise flickers.
+  - Near-identical state merging (`--merge-state-threshold`, `--merge-state-sigma-factor`).
+  - End-to-end post-fit classification cleanup (`cleanup_classification_result`).
+- **Fit quality diagnostics (`frethmm.core.metrics`)**:
+  - Quantitative metrics: minimum and mean SNR, RMSE, MAE, $R^2$, and state occupancies recorded in `*_summary.json`.
+- **Review grid enhancement**:
+  - Added `--files` parameter to `review-grid` to allow visual grid generation for specific files without folder restructuring.
+- **GUI controls & bilingual i18n**:
+  - Main parameters panel quick controls (Trim Start Artifacts, Clean Spikes, Min Dwell frames).
+  - Dedicated Clean & Filter Options dialog accessible from main panel, settings menu, and parameters dialog.
+  - Full English/Chinese bilingual support with dynamic switching.
 
 ### v1.7.1 (2026-09-07)
 

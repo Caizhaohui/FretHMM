@@ -95,8 +95,16 @@ frethmm run --files data.csv --states 3 -v
 | `--n-init` | 10 | 确定性多次启动 Baum-Welch 的次数，取对数似然最高的结果（填 `1` 可复现旧版单次拟合） |
 | `--min-states` | 2 | BIC 选择的最小状态数（仅 `--states auto` 时生效） |
 | `--max-states` | 6 | BIC 选择的最大状态数（仅 `--states auto` 时生效） |
+| `--remove-spikes` | 关闭 | 启用基于局部中位数与鲁棒 MAD 的孤立脉冲毛刺自动清洗 |
+| `--spike-threshold-sigma` | 5.0 | 脉冲检测阈值（偏离局部中位数多少个鲁棒 sigma 判定为异常点） |
+| `--trim-initial-artifacts` | 关闭 | 自动检测并剔除采集初期（快门/读出负脉冲）仪器伪影帧（如 Frame 0） |
+| `--max-initial-artifact-frames` | 5 | 允许剔除的最大初期伪影帧数 |
+| `--smooth-window` | 无 | 可选边缘保留中值平滑滤波窗口（奇数，如 3 或 5）以压制光子散粒噪声 |
+| `--min-dwell-frames` | 1 | 最小状态停留帧数；小于此帧数的短寿命抖动伪态自动合并至相邻态 |
+| `--merge-state-threshold` | 无 | 状态合并绝对阈值；均值差小于此值的相邻冗余状态自动合并 |
+| `--merge-state-sigma-factor` | 无 | 状态合并相对阈值；均值差小于此倍数 sigma 的相邻状态自动合并 |
 | `--classified-only` | 关闭 | 仅输出 `*_classified.csv`，不写出 `summary/report/path/dwell` |
-| `-v` / `--verbose` | 关闭 | 详细输出模式，显示所有警告 |
+| `-v` / `--verbose` | 关闭 | 详细输出模式，显示所有警告及诊断指标（SNR、RMSE、R²） |
 
 **批量处理说明：**
 
@@ -130,7 +138,8 @@ frethmm review-grid --input-dir ./traces/ --output review.png --states 2 \
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `--input-dir` | — | 输入轨迹文件目录（必填） |
+| `--input-dir` | — | 输入轨迹文件目录（与 `--files` 二选一，必填） |
+| `--files` | — | 指定一个或多个输入轨迹文件（与 `--input-dir` 二选一，必填） |
 | `--output` | — | 输出 PNG 路径（必填，如 `review.png`） |
 | `--output-dir` | 无 | 可选，用于存放 classified CSV 侧输出 |
 | `--states` | 2 | HMM 状态数，或填 `auto` 由 BIC 自动选择 |
@@ -541,6 +550,28 @@ python build_exe.py --onefile
 `dist/FretHMM.exe`，可使用 `dist/FretHMM.exe --version` 验证而不打开 GUI。
 
 ## 更新日志
+
+### v1.8.0 (2026-09-29)
+
+数据预处理模块、拟合后状态合并、质量诊断与 GUI 控件绑定：
+
+- **数据预处理模块 (`frethmm.core.preprocess`)**：
+  - 基于中位数绝对偏差 (MAD) 的鲁棒离散度估计 (`estimate_robust_sigma`)。
+  - 局部中位数与鲁棒 MAD 脉冲毛刺检测与清洗 (`--remove-spikes`, `--spike-threshold-sigma`)。
+  - 采集初期快门/读出负脉冲仪器伪影帧自动剔除 (`--trim-initial-artifacts`, `--max-initial-artifact-frames`)。
+  - 边缘保留中值滤波平滑 (`--smooth-window`)。
+- **拟合后处理模块 (`frethmm.core.postprocess`)**：
+  - 最小停留帧数合并 (`--min-dwell-frames`)，消除高频短寿命噪声抖动伪态。
+  - 相近均值冗余状态合并 (`--merge-state-threshold`, `--merge-state-sigma-factor`)。
+  - 端到端分类结果重整重算 (`cleanup_classification_result`)。
+- **拟合质量诊断指标 (`frethmm.core.metrics`)**：
+  - 定量输出最小/平均信噪比 (SNR)、RMSE、MAE、$R^2$ 及各状态占用率，自动写入 `*_summary.json`。
+- **审查拼图增强**：
+  - `review-grid` 子命令新增 `--files` 参数，支持直接指定离散文件列表。
+- **GUI 交互控件与双语支持**：
+  - 主面板集成快捷开关（去除起始伪迹、剔除尖峰、最小停留帧数）。
+  - 新增独立「预/后处理高级设置」弹窗及顶部菜单快捷入口。
+  - 完整的中英文双语与动态无缝切换。
 
 ### v1.7.1（2026-09-07）
 

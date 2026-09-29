@@ -156,14 +156,16 @@ def write_summary_json(
         "low_state_tail_kept_frames": result.low_state_tail_kept_frames,
         "warnings": list(result.warnings),
     }
-    # Multi-start and model-selection metadata. A plain single-start fit
-    # (``n_init == 1``) must keep the summary byte-for-byte identical to the
-    # legacy output, so all algorithm-hardening fields are gated on multi-start
-    # being active (``n_init > 1``) or on BIC model-selection having run
-    # (``model_candidates`` populated by ``--states auto``).
+    # Multi-start, model-selection, and algorithm-hardening metadata.
+    # A plain single-start fit (``n_init == 1``) without hardening must keep the
+    # summary byte-for-byte identical to the legacy output.
     is_multistart = result.n_init is not None and result.n_init > 1
     is_auto_selected = result.model_candidates is not None
-    if is_multistart or is_auto_selected:
+    is_hardened = (
+        bool(result.preprocessing_applied)
+        or bool(result.postprocessing_applied)
+    )
+    if is_multistart or is_auto_selected or is_hardened:
         if result.n_init is not None:
             payload["n_init"] = result.n_init
         if result.n_init_used is not None:
@@ -176,6 +178,12 @@ def write_summary_json(
             payload["aic"] = result.aic
         if result.model_candidates is not None:
             payload["model_candidates"] = result.model_candidates
+        if result.diagnostics is not None:
+            payload["diagnostics"] = result.diagnostics
+        if result.preprocessing_applied:
+            payload["preprocessing_applied"] = result.preprocessing_applied
+        if result.postprocessing_applied:
+            payload["postprocessing_applied"] = result.postprocessing_applied
     out_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return out_path
 
@@ -267,12 +275,7 @@ def find_trace_files(
 
 
 def find_classified_files(input_dir: Union[str, Path]) -> list[Path]:
-    """List ``*_classified.csv`` files in a directory, sorted by name.
-
-    Deliberately separate from :func:`find_trace_files`, which *excludes*
-    classified outputs (they are downstream artifacts, not raw inputs). Event
-    analysis, by contrast, consumes exactly those classified files.
-    """
+    """List ``*_classified.csv`` files in a directory, sorted by name."""
     input_dir = Path(input_dir)
     if not input_dir.is_dir():
         raise NotADirectoryError(f"Not a directory: {input_dir}")

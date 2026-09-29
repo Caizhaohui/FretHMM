@@ -115,6 +115,14 @@ class _FolderBatchJob:
     n_init: int = 10
     min_states: int = 2
     max_states: int = 6
+    remove_spikes: bool = False
+    spike_threshold_sigma: float = 5.0
+    trim_initial_artifacts: bool = False
+    max_initial_artifact_frames: int = 5
+    smooth_window: int | None = None
+    min_dwell_frames: int = 1
+    merge_state_threshold: float | None = None
+    merge_state_sigma_factor: float | None = None
 
 
 class _Msg:
@@ -428,6 +436,14 @@ class _App:
         self._n_init_var = tk.IntVar(value=10)
         self._min_states_var = tk.IntVar(value=2)
         self._max_states_var = tk.IntVar(value=6)
+        self._remove_spikes_var = tk.BooleanVar(value=False)
+        self._spike_threshold_sigma_var = tk.DoubleVar(value=5.0)
+        self._trim_initial_artifacts_var = tk.BooleanVar(value=False)
+        self._max_initial_artifact_frames_var = tk.IntVar(value=5)
+        self._smooth_window_var = tk.StringVar(value="")
+        self._min_dwell_frames_var = tk.IntVar(value=1)
+        self._merge_state_threshold_var = tk.StringVar(value="")
+        self._merge_state_sigma_factor_var = tk.StringVar(value="")
         self._review_rows_var = tk.IntVar(value=4)
         self._review_cols_var = tk.IntVar(value=8)
         self._review_output_var = tk.StringVar(value="review_grid.png")
@@ -549,6 +565,10 @@ class _App:
         settings_menu.add_command(
             label=self._t("menu_settings_params"),
             command=self._show_params_dialog,
+        )
+        settings_menu.add_command(
+            label=self._t("menu_settings_clean"),
+            command=self._show_clean_options_dialog,
         )
 
         lang_menu = tk.Menu(settings_menu, tearoff=0)
@@ -811,6 +831,40 @@ class _App:
             width=50,
         )
         self._signal_entry.pack(side=tk.LEFT, padx=(4, 0))
+
+        clean_row = ctk.CTkFrame(self._param_frame, fg_color="transparent")
+        clean_row.pack(fill=tk.X, pady=3, padx=10)
+
+        self._chk_trim_artifacts = ctk.CTkCheckBox(
+            clean_row,
+            text=self._t("label_trim_artifacts"),
+            variable=self._trim_initial_artifacts_var,
+        )
+        self._chk_trim_artifacts.pack(side=tk.LEFT, padx=(0, 10))
+
+        self._chk_remove_spikes = ctk.CTkCheckBox(
+            clean_row,
+            text=self._t("label_remove_spikes"),
+            variable=self._remove_spikes_var,
+        )
+        self._chk_remove_spikes.pack(side=tk.LEFT, padx=(0, 10))
+
+        self._lbl_min_dwell = ctk.CTkLabel(clean_row, text=self._t("label_min_dwell"))
+        self._lbl_min_dwell.pack(side=tk.LEFT)
+        self._min_dwell_entry = ctk.CTkEntry(
+            clean_row, textvariable=self._min_dwell_frames_var, width=45
+        )
+        self._min_dwell_entry.pack(side=tk.LEFT, padx=(4, 10))
+
+        self._btn_clean_options = ctk.CTkButton(
+            clean_row,
+            text=self._t("btn_clean_options"),
+            command=self._show_clean_options_dialog,
+            width=130,
+            fg_color="#37474F",
+            hover_color="#455A64",
+        )
+        self._btn_clean_options.pack(side=tk.LEFT, padx=(4, 0))
 
     def _build_output_section(
         self,
@@ -1751,6 +1805,10 @@ class _App:
         self._lbl_min_states.configure(text=self._t("label_min_states"))
         self._lbl_max_states.configure(text=self._t("label_max_states"))
         self._lbl_n_init.configure(text=self._t("label_n_init"))
+        self._chk_trim_artifacts.configure(text=self._t("label_trim_artifacts"))
+        self._chk_remove_spikes.configure(text=self._t("label_remove_spikes"))
+        self._lbl_min_dwell.configure(text=self._t("label_min_dwell"))
+        self._btn_clean_options.configure(text=self._t("btn_clean_options"))
 
         self._output_options_label.configure(text=self._t("label_output_files"))
         self._chk_export_classified.configure(text=self._t("output_option_classified"))
@@ -1824,10 +1882,13 @@ class _App:
             0, label=self._t("menu_settings_params")
         )
         self._settings_menu.entryconfig(
-            1, label=self._t("menu_settings_lang")
+            1, label=self._t("menu_settings_clean")
         )
         self._settings_menu.entryconfig(
-            2, label=self._t("menu_settings_theme")
+            2, label=self._t("menu_settings_lang")
+        )
+        self._settings_menu.entryconfig(
+            3, label=self._t("menu_settings_theme")
         )
         self._lang_menu.entryconfig(0, label=self._t("menu_settings_lang_en"))
         self._lang_menu.entryconfig(1, label=self._t("menu_settings_lang_zh"))
@@ -1838,9 +1899,14 @@ class _App:
 
         self._help_menu.entryconfig(0, label=self._t("menu_help_about"))
 
-        self._menubar.entryconfig(0, label=self._t("menu_file"))
-        self._menubar.entryconfig(1, label=self._t("menu_settings"))
-        self._menubar.entryconfig(2, label=self._t("menu_help"))
+        cascade_indices = [
+            i for i in range(self._menubar.index("end") + 1)
+            if self._menubar.type(i) == "cascade"
+        ]
+        if len(cascade_indices) >= 3:
+            self._menubar.entryconfig(cascade_indices[0], label=self._t("menu_file"))
+            self._menubar.entryconfig(cascade_indices[1], label=self._t("menu_settings"))
+            self._menubar.entryconfig(cascade_indices[2], label=self._t("menu_help"))
 
     def _show_params_dialog(self) -> None:
         dlg = ctk.CTkToplevel(self.root)
@@ -1969,8 +2035,227 @@ class _App:
             self._on_auto_states_changed()
             dlg.destroy()
 
+        ctk.CTkButton(
+            frame,
+            text=self._t("btn_clean_options"),
+            command=self._show_clean_options_dialog,
+            width=180,
+            fg_color="#37474F",
+            hover_color="#455A64",
+        ).grid(row=11, column=0, columnspan=2, pady=(12, 6))
+
         btn_frame = ctk.CTkFrame(frame, fg_color="transparent")
-        btn_frame.grid(row=11, column=0, columnspan=2, pady=(16, 0))
+        btn_frame.grid(row=12, column=0, columnspan=2, pady=(10, 0))
+        ctk.CTkButton(btn_frame, text="OK", command=apply, width=90).pack(
+            side=tk.LEFT, padx=6
+        )
+        ctk.CTkButton(
+            btn_frame, text="Cancel", command=dlg.destroy, width=90, fg_color="grey"
+        ).pack(side=tk.LEFT, padx=6)
+
+    def _parse_clean_options(
+        self,
+        *,
+        remove_spikes: bool,
+        spike_threshold_sigma_val: float | str,
+        trim_initial_artifacts: bool,
+        max_initial_artifact_frames_val: int | str,
+        smooth_window_val: int | str | None,
+        min_dwell_frames_val: int | str,
+        merge_state_threshold_val: float | str | None,
+        merge_state_sigma_factor_val: float | str | None,
+    ) -> tuple[bool, float, bool, int, int | None, int, float | None, float | None]:
+        # Validate spike_threshold_sigma
+        try:
+            spike_threshold_sigma = float(spike_threshold_sigma_val)
+            if spike_threshold_sigma <= 0:
+                raise ValueError()
+        except Exception:
+            raise ValueError(self._t("msg_invalid_spike_threshold", v=spike_threshold_sigma_val))
+
+        # Validate max_initial_artifact_frames
+        try:
+            max_initial_artifact_frames = int(max_initial_artifact_frames_val)
+            if max_initial_artifact_frames < 1:
+                raise ValueError()
+        except Exception:
+            raise ValueError(self._t("msg_invalid_max_artifact_frames", v=max_initial_artifact_frames_val))
+
+        # Validate smooth_window
+        smooth_window: int | None = None
+        if smooth_window_val is not None and str(smooth_window_val).strip() != "":
+            try:
+                smooth_window = int(str(smooth_window_val).strip())
+                if smooth_window <= 0 or smooth_window % 2 == 0:
+                    raise ValueError()
+            except Exception:
+                raise ValueError(self._t("msg_invalid_smooth_window", v=smooth_window_val))
+
+        # Validate min_dwell_frames
+        try:
+            min_dwell_frames = int(min_dwell_frames_val)
+            if min_dwell_frames < 1:
+                raise ValueError()
+        except Exception:
+            raise ValueError(self._t("msg_invalid_min_dwell", v=min_dwell_frames_val))
+
+        # Validate merge_state_threshold
+        merge_state_threshold: float | None = None
+        if merge_state_threshold_val is not None and str(merge_state_threshold_val).strip() != "":
+            try:
+                merge_state_threshold = float(str(merge_state_threshold_val).strip())
+                if merge_state_threshold <= 0:
+                    raise ValueError()
+            except Exception:
+                raise ValueError(self._t("msg_invalid_merge_threshold", v=merge_state_threshold_val))
+
+        # Validate merge_state_sigma_factor
+        merge_state_sigma_factor: float | None = None
+        if merge_state_sigma_factor_val is not None and str(merge_state_sigma_factor_val).strip() != "":
+            try:
+                merge_state_sigma_factor = float(str(merge_state_sigma_factor_val).strip())
+                if merge_state_sigma_factor <= 0:
+                    raise ValueError()
+            except Exception:
+                raise ValueError(self._t("msg_invalid_merge_sigma_factor", v=merge_state_sigma_factor_val))
+
+        return (
+            bool(remove_spikes),
+            spike_threshold_sigma,
+            bool(trim_initial_artifacts),
+            max_initial_artifact_frames,
+            smooth_window,
+            min_dwell_frames,
+            merge_state_threshold,
+            merge_state_sigma_factor,
+        )
+
+    def _show_clean_options_dialog(self) -> None:
+        dlg = ctk.CTkToplevel(self.root)
+        dlg.title(self._t("dlg_clean_options_title"))
+        dlg.geometry("540x480")
+        dlg.resizable(False, False)
+        dlg.transient(self.root)
+        dlg.grab_set()
+
+        sw = dlg.winfo_screenwidth()
+        sh = dlg.winfo_screenheight()
+        x = (sw - 540) // 2
+        y = (sh - 480) // 2
+        dlg.geometry(f"540x480+{x}+{y}")
+
+        main_frame = ctk.CTkFrame(dlg, corner_radius=0, fg_color="transparent")
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=15)
+
+        # Preprocessing Group
+        pre_group = ctk.CTkFrame(main_frame)
+        pre_group.pack(fill=tk.X, pady=(0, 12), padx=0)
+        ctk.CTkLabel(
+            pre_group,
+            text=self._t("group_preprocessing"),
+            font=ctk.CTkFont(weight="bold"),
+        ).pack(anchor=tk.W, padx=12, pady=(8, 4))
+
+        # Row 1: Trim Initial Artifacts
+        trim_row = ctk.CTkFrame(pre_group, fg_color="transparent")
+        trim_row.pack(fill=tk.X, padx=12, pady=4)
+        trim_var = tk.BooleanVar(value=self._trim_initial_artifacts_var.get())
+        ctk.CTkCheckBox(
+            trim_row,
+            text=self._t("label_trim_artifacts"),
+            variable=trim_var,
+        ).pack(side=tk.LEFT)
+        ctk.CTkLabel(trim_row, text=self._t("label_max_artifact_frames")).pack(side=tk.LEFT, padx=(20, 6))
+        max_art_var = tk.IntVar(value=self._max_initial_artifact_frames_var.get())
+        ctk.CTkEntry(trim_row, textvariable=max_art_var, width=60).pack(side=tk.LEFT)
+
+        # Row 2: Remove Spikes
+        spike_row = ctk.CTkFrame(pre_group, fg_color="transparent")
+        spike_row.pack(fill=tk.X, padx=12, pady=4)
+        spikes_var = tk.BooleanVar(value=self._remove_spikes_var.get())
+        ctk.CTkCheckBox(
+            spike_row,
+            text=self._t("label_remove_spikes"),
+            variable=spikes_var,
+        ).pack(side=tk.LEFT)
+        ctk.CTkLabel(spike_row, text=self._t("label_spike_threshold_sigma")).pack(side=tk.LEFT, padx=(20, 6))
+        spike_thresh_var = tk.DoubleVar(value=self._spike_threshold_sigma_var.get())
+        ctk.CTkEntry(spike_row, textvariable=spike_thresh_var, width=60).pack(side=tk.LEFT)
+
+        # Row 3: Median Filter Smooth Window
+        smooth_row = ctk.CTkFrame(pre_group, fg_color="transparent")
+        smooth_row.pack(fill=tk.X, padx=12, pady=(4, 10))
+        ctk.CTkLabel(smooth_row, text=self._t("label_smooth_window")).pack(side=tk.LEFT)
+        smooth_var = tk.StringVar(value=self._smooth_window_var.get())
+        ctk.CTkEntry(smooth_row, textvariable=smooth_var, width=70).pack(side=tk.LEFT, padx=(8, 0))
+
+        # Postprocessing Group
+        post_group = ctk.CTkFrame(main_frame)
+        post_group.pack(fill=tk.X, pady=(0, 12), padx=0)
+        ctk.CTkLabel(
+            post_group,
+            text=self._t("group_postprocessing"),
+            font=ctk.CTkFont(weight="bold"),
+        ).pack(anchor=tk.W, padx=12, pady=(8, 4))
+
+        # Row 1: Min Dwell Frames
+        dwell_row = ctk.CTkFrame(post_group, fg_color="transparent")
+        dwell_row.pack(fill=tk.X, padx=12, pady=4)
+        ctk.CTkLabel(dwell_row, text=self._t("label_min_dwell")).pack(side=tk.LEFT)
+        min_dwell_var = tk.IntVar(value=self._min_dwell_frames_var.get())
+        ctk.CTkEntry(dwell_row, textvariable=min_dwell_var, width=60).pack(side=tk.LEFT, padx=(8, 0))
+
+        # Row 2: Merge State Absolute Threshold
+        merge_thresh_row = ctk.CTkFrame(post_group, fg_color="transparent")
+        merge_thresh_row.pack(fill=tk.X, padx=12, pady=4)
+        ctk.CTkLabel(merge_thresh_row, text=self._t("label_merge_threshold")).pack(side=tk.LEFT)
+        merge_thresh_var = tk.StringVar(value=self._merge_state_threshold_var.get())
+        ctk.CTkEntry(merge_thresh_row, textvariable=merge_thresh_var, width=80).pack(side=tk.LEFT, padx=(8, 0))
+
+        # Row 3: Merge State Sigma Factor
+        merge_sigma_row = ctk.CTkFrame(post_group, fg_color="transparent")
+        merge_sigma_row.pack(fill=tk.X, padx=12, pady=(4, 10))
+        ctk.CTkLabel(merge_sigma_row, text=self._t("label_merge_sigma_factor")).pack(side=tk.LEFT)
+        merge_sigma_var = tk.StringVar(value=self._merge_state_sigma_factor_var.get())
+        ctk.CTkEntry(merge_sigma_row, textvariable=merge_sigma_var, width=80).pack(side=tk.LEFT, padx=(8, 0))
+
+        def apply() -> None:
+            try:
+                (
+                    r_spikes,
+                    s_thresh,
+                    t_art,
+                    m_art,
+                    s_win,
+                    m_dwell,
+                    m_thresh,
+                    m_sigma,
+                ) = self._parse_clean_options(
+                    remove_spikes=spikes_var.get(),
+                    spike_threshold_sigma_val=spike_thresh_var.get(),
+                    trim_initial_artifacts=trim_var.get(),
+                    max_initial_artifact_frames_val=max_art_var.get(),
+                    smooth_window_val=smooth_var.get(),
+                    min_dwell_frames_val=min_dwell_var.get(),
+                    merge_state_threshold_val=merge_thresh_var.get(),
+                    merge_state_sigma_factor_val=merge_sigma_var.get(),
+                )
+            except ValueError as exc:
+                messagebox.showerror(self._t("msg_invalid_params"), str(exc))
+                return
+
+            self._remove_spikes_var.set(r_spikes)
+            self._spike_threshold_sigma_var.set(s_thresh)
+            self._trim_initial_artifacts_var.set(t_art)
+            self._max_initial_artifact_frames_var.set(m_art)
+            self._smooth_window_var.set(str(s_win) if s_win is not None else "")
+            self._min_dwell_frames_var.set(m_dwell)
+            self._merge_state_threshold_var.set(str(m_thresh) if m_thresh is not None else "")
+            self._merge_state_sigma_factor_var.set(str(m_sigma) if m_sigma is not None else "")
+            dlg.destroy()
+
+        btn_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+        btn_frame.pack(fill=tk.X, pady=(10, 0))
         ctk.CTkButton(btn_frame, text="OK", command=apply, width=90).pack(
             side=tk.LEFT, padx=6
         )
@@ -2154,6 +2439,30 @@ class _App:
                 )
                 return
 
+        try:
+            (
+                remove_spikes,
+                spike_threshold_sigma,
+                trim_initial_artifacts,
+                max_initial_artifact_frames,
+                smooth_window,
+                min_dwell_frames,
+                merge_state_threshold,
+                merge_state_sigma_factor,
+            ) = self._parse_clean_options(
+                remove_spikes=self._remove_spikes_var.get(),
+                spike_threshold_sigma_val=self._spike_threshold_sigma_var.get(),
+                trim_initial_artifacts=self._trim_initial_artifacts_var.get(),
+                max_initial_artifact_frames_val=self._max_initial_artifact_frames_var.get(),
+                smooth_window_val=self._smooth_window_var.get(),
+                min_dwell_frames_val=self._min_dwell_frames_var.get(),
+                merge_state_threshold_val=self._merge_state_threshold_var.get(),
+                merge_state_sigma_factor_val=self._merge_state_sigma_factor_var.get(),
+            )
+        except ValueError as e:
+            messagebox.showerror(self._t("msg_invalid_params"), str(e))
+            return
+
         job = _FolderBatchJob(
             folder=str(folder_path),
             n_states=states,
@@ -2167,6 +2476,14 @@ class _App:
             n_init=n_init,
             min_states=min_states,
             max_states=max_states,
+            remove_spikes=remove_spikes,
+            spike_threshold_sigma=spike_threshold_sigma,
+            trim_initial_artifacts=trim_initial_artifacts,
+            max_initial_artifact_frames=max_initial_artifact_frames,
+            smooth_window=smooth_window,
+            min_dwell_frames=min_dwell_frames,
+            merge_state_threshold=merge_state_threshold,
+            merge_state_sigma_factor=merge_state_sigma_factor,
         )
         self.folder_jobs.append(job)
         states_display = "auto" if auto_states else str(states)
@@ -2429,6 +2746,26 @@ class _App:
             raise ValueError(self._t("msg_invalid_n_init", v=n_init))
         low_state_tail_trim_seconds = self._parse_low_state_tail_trim_seconds()
 
+        (
+            remove_spikes,
+            spike_threshold_sigma,
+            trim_initial_artifacts,
+            max_initial_artifact_frames,
+            smooth_window,
+            min_dwell_frames,
+            merge_state_threshold,
+            merge_state_sigma_factor,
+        ) = self._parse_clean_options(
+            remove_spikes=self._remove_spikes_var.get(),
+            spike_threshold_sigma_val=self._spike_threshold_sigma_var.get(),
+            trim_initial_artifacts=self._trim_initial_artifacts_var.get(),
+            max_initial_artifact_frames_val=self._max_initial_artifact_frames_var.get(),
+            smooth_window_val=self._smooth_window_var.get(),
+            min_dwell_frames_val=self._min_dwell_frames_var.get(),
+            merge_state_threshold_val=self._merge_state_threshold_var.get(),
+            merge_state_sigma_factor_val=self._merge_state_sigma_factor_var.get(),
+        )
+
         if self._auto_states_var.get():
             min_states = self._min_states_var.get()
             max_states = self._max_states_var.get()
@@ -2450,6 +2787,14 @@ class _App:
                 n_init=n_init,
                 min_states=min_states,
                 max_states=max_states,
+                remove_spikes=remove_spikes,
+                spike_threshold_sigma=spike_threshold_sigma,
+                trim_initial_artifacts=trim_initial_artifacts,
+                max_initial_artifact_frames=max_initial_artifact_frames,
+                smooth_window=smooth_window,
+                min_dwell_frames=min_dwell_frames,
+                merge_state_threshold=merge_state_threshold,
+                merge_state_sigma_factor=merge_state_sigma_factor,
             )
 
         n_states = self._states_var.get()
@@ -2464,6 +2809,14 @@ class _App:
             signal_column=signal_column,
             low_state_tail_trim_seconds=low_state_tail_trim_seconds,
             n_init=n_init,
+            remove_spikes=remove_spikes,
+            spike_threshold_sigma=spike_threshold_sigma,
+            trim_initial_artifacts=trim_initial_artifacts,
+            max_initial_artifact_frames=max_initial_artifact_frames,
+            smooth_window=smooth_window,
+            min_dwell_frames=min_dwell_frames,
+            merge_state_threshold=merge_state_threshold,
+            merge_state_sigma_factor=merge_state_sigma_factor,
         )
 
     def _build_folder_job_config(self, job: _FolderBatchJob):
@@ -2485,6 +2838,14 @@ class _App:
                 n_init=job.n_init,
                 min_states=job.min_states,
                 max_states=job.max_states,
+                remove_spikes=job.remove_spikes,
+                spike_threshold_sigma=job.spike_threshold_sigma,
+                trim_initial_artifacts=job.trim_initial_artifacts,
+                max_initial_artifact_frames=job.max_initial_artifact_frames,
+                smooth_window=job.smooth_window,
+                min_dwell_frames=job.min_dwell_frames,
+                merge_state_threshold=job.merge_state_threshold,
+                merge_state_sigma_factor=job.merge_state_sigma_factor,
             )
 
         guesses = self._parse_guesses(job.guesses_text, job.n_states)
@@ -2498,6 +2859,14 @@ class _App:
             signal_column=job.signal_column,
             low_state_tail_trim_seconds=low_state_tail_trim_seconds,
             n_init=job.n_init,
+            remove_spikes=job.remove_spikes,
+            spike_threshold_sigma=job.spike_threshold_sigma,
+            trim_initial_artifacts=job.trim_initial_artifacts,
+            max_initial_artifact_frames=job.max_initial_artifact_frames,
+            smooth_window=job.smooth_window,
+            min_dwell_frames=job.min_dwell_frames,
+            merge_state_threshold=job.merge_state_threshold,
+            merge_state_sigma_factor=job.merge_state_sigma_factor,
         )
 
     def _confirm_requested_workers(self) -> int | None:
@@ -3051,6 +3420,43 @@ def run_gui() -> None:
     app = _App(root, fonts)
     app.build()
     root.protocol("WM_DELETE_WINDOW", app._on_close)
+
+    def _report_callback_exception(exc_type, exc_value, exc_tb):
+        # Tkinter callback exceptions never reach sys.excepthook; in a
+        # windowed (console-less) build they vanish silently. Route them to
+        # the debug log so frozen-runtime failures stay diagnosable.
+        import traceback as _tb
+
+        _append_debug_log(
+            "Tk callback exception:\n"
+            + "".join(_tb.format_exception(exc_type, exc_value, exc_tb))
+        )
+        try:
+            messagebox.showerror(
+                "FretHMM Error",
+                f"{exc_type.__name__}: {exc_value}",
+            )
+        except Exception:
+            pass
+
+    root.report_callback_exception = _report_callback_exception
+
+    auto_review_dir = os.environ.get("FRETTHMM_AUTOREVIEW")
+    if auto_review_dir:
+        def _auto_review() -> None:
+            try:
+                from frethmm.core.io import find_trace_files
+
+                files = [str(p) for p in find_trace_files(Path(auto_review_dir))]
+                _append_debug_log(f"AUTOREVIEW: loaded {len(files)} files")
+                app.selected_files = files
+                app._refresh_input_status()
+                _append_debug_log("AUTOREVIEW: invoking _run_review_grid")
+                app._run_review_grid()
+            except Exception:
+                _append_debug_log("AUTOREVIEW failed:\n" + traceback.format_exc())
+
+        root.after(2500, _auto_review)
 
     def _lazy_init():
         import importlib

@@ -61,6 +61,21 @@ class ClassificationConfig:
     min_states: int = DEFAULT_MIN_STATES
     max_states: int = DEFAULT_MAX_STATES
 
+    # Phase 4 Preprocessing options
+    remove_spikes: bool = False
+    spike_threshold_sigma: float = 5.0
+    trim_initial_artifacts: bool = False
+    max_initial_artifact_frames: int = 5
+    smooth_window: Optional[int] = None
+
+    # Phase 4 Postprocessing options
+    min_dwell_frames: int = 1
+    merge_state_threshold: Optional[float] = None
+    merge_state_sigma_factor: Optional[float] = None
+
+    # Phase 4 Quality diagnostics
+    compute_diagnostics: bool = True
+
     def __post_init__(self) -> None:
         # Allow either a positive int or the "auto" sentinel.
         if self.n_states != AUTO_STATES:
@@ -91,10 +106,54 @@ class ClassificationConfig:
                 "low_state_tail_trim_seconds must be > 0 when provided, "
                 f"got {self.low_state_tail_trim_seconds}"
             )
+        if self.spike_threshold_sigma <= 0:
+            raise ValueError(
+                f"spike_threshold_sigma must be > 0, got {self.spike_threshold_sigma}"
+            )
+        if self.max_initial_artifact_frames < 1:
+            raise ValueError(
+                f"max_initial_artifact_frames must be >= 1, got {self.max_initial_artifact_frames}"
+            )
+        if self.smooth_window is not None:
+            if self.smooth_window < 1 or self.smooth_window % 2 == 0:
+                raise ValueError(
+                    f"smooth_window must be an odd positive integer, got {self.smooth_window}"
+                )
+        if self.min_dwell_frames < 1:
+            raise ValueError(
+                f"min_dwell_frames must be >= 1, got {self.min_dwell_frames}"
+            )
+        if self.merge_state_threshold is not None and self.merge_state_threshold < 0:
+            raise ValueError(
+                f"merge_state_threshold must be >= 0, got {self.merge_state_threshold}"
+            )
+        if (
+            self.merge_state_sigma_factor is not None
+            and self.merge_state_sigma_factor < 0
+        ):
+            raise ValueError(
+                f"merge_state_sigma_factor must be >= 0, got {self.merge_state_sigma_factor}"
+            )
 
     @property
     def is_auto_states(self) -> bool:
         return self.n_states == AUTO_STATES
+
+    @property
+    def has_preprocessing(self) -> bool:
+        return (
+            self.remove_spikes
+            or self.trim_initial_artifacts
+            or (self.smooth_window is not None and self.smooth_window > 1)
+        )
+
+    @property
+    def has_postprocessing(self) -> bool:
+        return (
+            self.min_dwell_frames > 1
+            or self.merge_state_threshold is not None
+            or self.merge_state_sigma_factor is not None
+        )
 
     def default_state_means(
         self,
@@ -118,6 +177,7 @@ class ClassificationConfig:
         if self.n_states == AUTO_STATES:
             return self.min_states
         return int(self.n_states)
+
 
 @dataclass
 class SignalTrace:
@@ -174,6 +234,10 @@ class ClassificationResult:
     bic: Optional[float] = None
     aic: Optional[float] = None
     model_candidates: Optional[list[dict[str, object]]] = None
+    # Phase 4 Algorithm Hardening Metadata
+    diagnostics: Optional[dict[str, object]] = None
+    preprocessing_applied: list[str] = field(default_factory=list)
+    postprocessing_applied: list[str] = field(default_factory=list)
 
     @property
     def dwell_segments(self) -> FloatArray:

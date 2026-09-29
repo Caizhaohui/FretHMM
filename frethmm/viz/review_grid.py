@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from frethmm.core.batch import process_batch
+from frethmm.core.batch import process_batch, process_files
 from frethmm.core.io import read_signal_trace
 from frethmm.domain.models import ClassificationConfig, ClassificationResult
 
@@ -181,20 +181,35 @@ def plot_review_grid(
 
 
 def generate_review_grid(
-    input_dir: Path,
-    config: ClassificationConfig,
-    output: Path,
+    input_dir: Optional[Path] = None,
+    config: Optional[ClassificationConfig] = None,
+    output: Optional[Path] = None,
     *,
+    files: Optional[list[Path]] = None,
     results_dir: Optional[Path] = None,
     rows: int = 4,
     cols: int = 4,
     classified_only: bool = True,
 ) -> tuple[list[ClassificationResult], list[Path]]:
-    results = process_batch(
-        input_dir=input_dir,
-        config=config,
-        output_dir=results_dir,
-        classified_only=classified_only,
-    )
+    if config is None or output is None:
+        raise ValueError("config and output must be provided")
+
+    if files is not None:
+        results = process_files(
+            files=files,
+            config=config,
+            output_dir=results_dir,
+            classified_only=classified_only,
+        )
+    elif input_dir is not None:
+        results = process_batch(
+            input_dir=input_dir,
+            config=config,
+            output_dir=results_dir,
+            classified_only=classified_only,
+        )
+    else:
+        raise ValueError("Either input_dir or files must be provided to generate_review_grid")
+
     image_paths = plot_review_grid(results, config, output, rows=rows, cols=cols)
     return results, image_paths

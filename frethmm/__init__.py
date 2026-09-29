@@ -1,3 +1,3 @@
 """FretHMM: Hidden Markov Model state classification for single-molecule trajectories."""
 
-__version__ = "1.7.1"
+__version__ = "1.8.0"

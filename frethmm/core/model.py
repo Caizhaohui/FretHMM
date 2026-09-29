@@ -17,8 +17,18 @@ from frethmm.core.io import (
     write_state_report,
     write_summary_json,
 )
-from frethmm.core.metrics import count_gaussian_hmm_params, compute_aic, compute_bic
-from frethmm.core.postprocess import build_classified_signal, compute_transition_stats
+from frethmm.core.metrics import (
+    compute_aic,
+    compute_bic,
+    compute_fit_diagnostics,
+    count_gaussian_hmm_params,
+)
+from frethmm.core.postprocess import (
+    build_classified_signal,
+    cleanup_classification_result,
+    compute_transition_stats,
+)
+from frethmm.core.preprocess import preprocess_signal_trace
 from frethmm.domain.models import (
     AUTO_STATES,
     ClassificationConfig,
@@ -227,6 +237,18 @@ def fit_signal_hmm(
     )
     signal_sigma = float(observations.std())
 
+    diagnostics = (
+        compute_fit_diagnostics(
+            observations=observations,
+            state_means=state_means,
+            state_sigma=best["state_sigma"],
+            state_path=state_path,
+            classified_signal=classified_signal,
+        )
+        if config.compute_diagnostics
+        else None
+    )
+
     return ClassificationResult(
         n_states=n_states,
         log_prob=best["log_prob"],
@@ -247,6 +269,7 @@ def fit_signal_hmm(
         best_start_index=best["start_index"],
         bic=compute_bic(n_params, best["log_prob"], n_samples),
         aic=compute_aic(n_params, best["log_prob"]),
+        diagnostics=diagnostics,
     )
 
 
@@ -349,6 +372,13 @@ def process_trace_file(
     export_options: Optional[ExportOptions] = None,
 ) -> ClassificationResult:
     trace = read_signal_trace(filepath, mode=config.data_mode, signal_column=config.signal_column)
+
+    # Optional Preprocessing (spikes, initial artifacts, median smoothing)
+    if config.has_preprocessing:
+        trace, prep_logs = preprocess_signal_trace(trace, config)
+    else:
+        prep_logs = []
+
     trim_seconds = config.low_state_tail_trim_seconds
 
     def _fit(current_trace: SignalTrace) -> ClassificationResult:
@@ -375,6 +405,27 @@ def process_trace_file(
             )
     else:
         result = _fit(trace)
+
+    if prep_logs:
+        result.preprocessing_applied = list(prep_logs)
+        for log in prep_logs:
+            if log not in result.warnings:
+                result.warnings.append(log)
+
+    # Optional Postprocessing (consolidation of near-identical states, transient dwell merging)
+    if config.has_postprocessing:
+        result = cleanup_classification_result(result, trace, config)
+
+    # Refresh diagnostics after postprocessing if enabled
+    if config.compute_diagnostics:
+        result.diagnostics = compute_fit_diagnostics(
+            observations=trace.observations,
+            state_means=result.state_means,
+            state_sigma=result.state_sigma,
+            state_path=result.state_path,
+            classified_signal=result.classified_signal,
+        )
+
     exports = _resolve_export_options(export_options, classified_only)
     if exports.classified_csv:
         write_classified_csv(trace, result, output_dir)

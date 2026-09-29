@@ -124,3 +124,25 @@ def test_plot_review_grid_paginates_outputs(tmp_path: Path):
     assert outputs[0].name == "review_page_01.png"
     assert outputs[1].name == "review_page_02.png"
     assert all(path.exists() and path.stat().st_size > 0 for path in outputs)
+
+
+def test_generate_review_grid_with_files_list(tmp_path: Path):
+    from frethmm.viz.review_grid import generate_review_grid
+
+    trace1 = tmp_path / "t1.csv"
+    trace1.write_text("Time,signal\n0,0.1\n1,0.9\n2,0.1\n3,0.9\n", encoding="utf-8")
+    trace2 = tmp_path / "t2.csv"
+    trace2.write_text("Time,signal\n0,0.2\n1,0.8\n2,0.2\n3,0.8\n", encoding="utf-8")
+
+    out_png = tmp_path / "grid.png"
+    cfg = ClassificationConfig(n_states=2, n_init=1)
+    results, images = generate_review_grid(
+        files=[trace1, trace2],
+        config=cfg,
+        output=out_png,
+        rows=1,
+        cols=2,
+    )
+    assert len(results) == 2
+    assert len(images) == 1
+    assert out_png.exists()
